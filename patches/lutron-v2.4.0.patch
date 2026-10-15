@@ -1,0 +1,3119 @@
+diff --git a/firmware/application/baseband_api.cpp b/firmware/application/baseband_api.cpp
+index 42a172e..7988ef6 100644
+--- a/firmware/application/baseband_api.cpp
++++ b/firmware/application/baseband_api.cpp
+@@ -302,6 +302,11 @@ void kill_ook() {
+     send_message(&message);
+ }
+ 
++void set_lutron_tx(const uint8_t count) {
++    const LutronTxConfigureMessage message{count};
++    send_message(&message);
++}
++
+ void set_fsk_data(const uint32_t stream_length, const uint32_t samples_per_bit, const uint32_t shift, const uint32_t progress_notice) {
+     const FSKConfigureMessage message{
+         stream_length,
+diff --git a/firmware/application/baseband_api.hpp b/firmware/application/baseband_api.hpp
+index 95a6b69..d8c3e79 100644
+--- a/firmware/application/baseband_api.hpp
++++ b/firmware/application/baseband_api.hpp
+@@ -118,6 +118,7 @@ void set_rtty_config(uint16_t baud, uint16_t shift, uint8_t* payload = nullptr,
+ void set_rtty_config(RTTYDataMessage& message);
+ void set_epirb_tx_config(EPIRBTXDataMessage& message);
+ void set_p25tx_data(const uint8_t* dibits, uint16_t frame_length);
++void set_lutron_tx(uint8_t count);
+ 
+ void request_roger_beep();
+ void request_rssi_beep();
+diff --git a/firmware/application/external/external.cmake b/firmware/application/external/external.cmake
+index dfa89ef..7cb3f76 100644
+--- a/firmware/application/external/external.cmake
++++ b/firmware/application/external/external.cmake
+@@ -340,6 +340,14 @@ set(EXTCPPSRC
+ 	#p25_tx
+ 	external/p25_tx/main.cpp
+ 	external/p25_tx/ui_p25_tx.cpp
++
++	#lutron pico rx
++	external/lutron_rx/main.cpp
++	external/lutron_rx/ui_lutron_rx.cpp
++
++	#lutron pico tx
++	external/lutron_tx/main.cpp
++	external/lutron_tx/ui_lutron_tx.cpp
+ )
+ 
+ set(EXTAPPLIST
+@@ -425,6 +433,8 @@ set(EXTAPPLIST
+ 	time_sink
+ 	kiss_tnc
+ 	p25_tx
++	lutron_rx
++	lutron_tx
+ )
+ 
+ # sdusb has type conflicts with PRALINE (HackRF Pro) - add only for non-PRALINE builds
+diff --git a/firmware/application/external/external.ld b/firmware/application/external/external.ld
+index cd61633..4ffb3e2 100644
+--- a/firmware/application/external/external.ld
++++ b/firmware/application/external/external.ld
+@@ -106,6 +106,8 @@ MEMORY
+     ram_external_app_epirb_tx              (rwx) : org = 0xAE010000, len = 32k
+     ram_external_app_fpv_detect            (rwx) : org = 0xAE020000, len = 32k
+     ram_external_app_p25_tx                (rwx) : org = 0xAE030000, len = 32k
++    ram_external_app_lutron_rx             (rwx) : org = 0xAE040000, len = 32k
++    ram_external_app_lutron_tx             (rwx) : org = 0xAE050000, len = 32k
+ }
+ 
+ SECTIONS
+@@ -607,4 +609,25 @@ SECTIONS
+         KEEP(*(.external_app.app_p25_tx.application_information));
+         *(*ui*external_app*p25_tx*);
+     } > ram_external_app_p25_tx
++
++    .external_app_lutron_rx : ALIGN(4) SUBALIGN(4)
++    {
++        KEEP(*(.external_app.app_lutron_rx.application_information));
++        *(*ui*external_app*lutron_rx*);
++        /* An init pointer left in flash while its ctor is at 0xAE hard-faults before the screen. */
++        *lutron_rx*(.init_array)
++        *lutron_rx*(.init_array.*)
++        *lutron_rx*(.fini_array)
++        *lutron_rx*(.fini_array.*)
++    } > ram_external_app_lutron_rx
++
++    .external_app_lutron_tx : ALIGN(4) SUBALIGN(4)
++    {
++        KEEP(*(.external_app.app_lutron_tx.application_information));
++        *(*ui*external_app*lutron_tx*);
++        *lutron_tx*(.init_array)
++        *lutron_tx*(.init_array.*)
++        *lutron_tx*(.fini_array)
++        *lutron_tx*(.fini_array.*)
++    } > ram_external_app_lutron_tx
+ }
+diff --git a/firmware/application/external/lutron_rx/main.cpp b/firmware/application/external/lutron_rx/main.cpp
+new file mode 100644
+index 0000000..09f3572
+--- /dev/null
++++ b/firmware/application/external/lutron_rx/main.cpp
+@@ -0,0 +1,51 @@
++/*
++ * Copyright (C) 2026 Dave Hammer
++ *
++ * This file is part of PortaPack.
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; either version 3, or (at your option)
++ * any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program; see the file COPYING.  If not, write to
++ * the Free Software Foundation, Inc., 51 Franklin Street,
++ * Boston, MA 02110-1301, USA.
++ */
++
++#include "ui.hpp"
++#include "ui_lutron_rx.hpp"
++#include "ui_navigation.hpp"
++#include "external_app.hpp"
++
++namespace ui::external_app::lutron_rx {
++void initialize_app(ui::NavigationView& nav) {
++    nav.push<LutronRxView>();
++}
++}  // namespace ui::external_app::lutron_rx
++
++extern "C" {
++
++__attribute__((section(".external_app.app_lutron_rx.application_information"), used)) application_information_t _application_information_lutron_rx = {
++    /*.memory_location = */ (uint8_t*)0x00000000,
++    /*.externalAppEntry = */ ui::external_app::lutron_rx::initialize_app,
++    /*.header_version = */ CURRENT_HEADER_VERSION,
++    /*.app_version = */ VERSION_MD5,
++
++    /*.app_name = */ "Lutron RX",
++    /*.bitmap_data = */ {// a remote: outline with a column of buttons
++                         0xF0, 0x0F, 0x10, 0x08, 0xD0, 0x0B, 0x10, 0x08, 0xD0, 0x0B, 0x10, 0x08, 0xD0, 0x0B, 0x10, 0x08, 0xD0, 0x0B, 0x10, 0x08, 0xD0, 0x0B, 0x10, 0x08, 0xD0, 0x0B, 0x10, 0x08, 0xF0, 0x0F, 0x00, 0x00},
++    /*.icon_color = */ ui::Color::orange().v,
++    /*.menu_location = */ app_location_t::RX,
++    /*.desired_menu_position = */ -1,
++
++    /*.m4_app_tag = portapack::spi_flash::image_tag_lutron_rx */ {'P', 'L', 'U', 'T'},
++    /*.m4_app_offset = */ 0x00000000,  // will be filled at compile time
++};
++}
+diff --git a/firmware/application/external/lutron_rx/ui_lutron_rx.cpp b/firmware/application/external/lutron_rx/ui_lutron_rx.cpp
+new file mode 100644
+index 0000000..d2d49e8
+--- /dev/null
++++ b/firmware/application/external/lutron_rx/ui_lutron_rx.cpp
+@@ -0,0 +1,329 @@
++/*
++ * Copyright (C) 2026 Dave Hammer
++ *
++ * This file is part of PortaPack.
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; either version 3, or (at your option)
++ * any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program; see the file COPYING.  If not, write to
++ * the Free Software Foundation, Inc., 51 Franklin Street,
++ * Boston, MA 02110-1301, USA.
++ */
++
++#include "ui_lutron_rx.hpp"
++#include "baseband_api.hpp"
++#include "string_format.hpp"
++#include "file.hpp"
++#include "file_reader.hpp"
++#include "lutron_store.hpp"
++#include "ui_textentry.hpp"
++
++#include "ch.h"
++
++#include <cstring>
++
++using namespace portapack;
++
++namespace ui::external_app::lutron_rx {
++
++namespace {
++
++/* Returned by value. A global path constructor is linked at 0xAE while its init pointer stays in the boot table. */
++std::filesystem::path saved_path() {
++    return std::filesystem::path{u"LUTRON/saved.txt"};
++}
++std::filesystem::path log_path() {
++    return std::filesystem::path{u"LUTRON/log.csv"};
++}
++
++std::string button_text(uint8_t code) {
++    const char* name = lutron::button_name(code);
++    if (name[0] == '?') return "BTN" + to_string_dec_uint(code);  // a button number not seen yet
++    return name;
++}
++
++/* 1234 ms -> "1.2 s" */
++std::string seconds(uint32_t ms) {
++    return to_string_dec_uint(ms / 1000) + '.' + to_string_dec_uint((ms % 1000) / 100) + " s";
++}
++
++std::string hex_bytes(const uint8_t* bytes, size_t count) {
++    std::string s;
++    for (size_t i = 0; i < count; i++) s += to_string_hex(bytes[i], 2);
++    return s;
++}
++
++}  // namespace
++
++std::string LutronRxView::label(uint64_t id) const {
++    const char* alias = aliases_.find(id);
++    std::string s = alias ? std::string{alias} : to_string_hex(id, 8);
++    s.resize(10, ' ');
++    return s;
++}
++
++/* "Kitchen    RAISE/5 T1 14/14", the button code follows the name */
++std::string LutronRxView::describe(const lutron::PressVoter::Press& press) const {
++    std::string line = label(press.frame.id) + ' ';
++    line += button_text(press.frame.button) + '/' + to_string_dec_uint(press.frame.button);
++    line += " T" + to_string_dec_uint(press.frame.toggle);
++    line += press.frame.release ? " R " : " P ";
++    line += to_string_dec_uint(press.agree) + '/' + to_string_dec_uint(press.total);
++    return line;
++}
++
++LutronRxView::LutronRxView(NavigationView& nav)
++    : nav_{nav} {
++    /* the baseband image travels inside the .ppma; the loader has already copied it to M4 RAM */
++    baseband::run_prepared_image(portapack::memory::map::m4_code.base());
++
++    add_children({&rssi,
++                  &channel,
++                  &field_rf_amp,
++                  &field_lna,
++                  &field_vga,
++                  &field_frequency,
++                  &text_live,
++                  &text_stats,
++                  &text_info,
++                  &text_id,
++                  &button_prev,
++                  &button_next,
++                  &button_name,
++                  &button_save,
++                  &check_log,
++                  &console});
++
++    field_frequency.set_step(5000);
++
++    load_files();
++    show_info();
++
++    button_prev.on_select = [this](Button&) { on_prev(); };
++    button_next.on_select = [this](Button&) { on_next(); };
++    button_name.on_select = [this](Button&) { on_name(); };
++    button_save.on_select = [this](Button&) { on_save(); };
++    check_log.on_select = [this](Checkbox&, bool on) {
++        if (on && !logging_) {
++            auto error = log_.append(log_path());
++            logging_ = !error;
++            if (error) check_log.set_value(false);
++        } else if (!on) {
++            logging_ = false;
++        }
++        text_info.set(logging_ ? "logging to LUTRON/log.csv" : "logging off");
++    };
++
++    receiver_model.enable();
++}
++
++void LutronRxView::focus() {
++    field_frequency.focus();
++}
++
++void LutronRxView::load_files() {
++    lutron_store::load_ids(ids_, aliases_);
++    lutron_store::load_subnet(subnet_);
++    if (ids_.size() != 0) selected_ = 0;
++    show_id();
++}
++
++void LutronRxView::note_subnet(const lutron::Frame& frame) {
++    if (!frame.valid) return;
++    lutron::Subnet seen{};
++    if (!lutron::bridge_subnet(frame.raw, seen)) return;
++    const bool changed = !subnet_.known || subnet_.b0 != seen.b0 || subnet_.b1 != seen.b1 || subnet_.b2 != seen.b2;
++    if (!changed) return;
++    if (!lutron_store::remember_subnet(subnet_, seen)) {
++        if (!subnet_warned_) {
++            console.writeln("SUBNET not saved");
++            subnet_warned_ = true;
++        }
++        return;
++    }
++    subnet_warned_ = false;
++    console.writeln("SUBNET " + to_string_hex(lutron::subnet_word(subnet_), 6));
++}
++
++void LutronRxView::show_id() {
++    if (selected_ < 0 || ids_.size() == 0) {
++        text_id.set("no Pico ID yet");
++        return;
++    }
++    const uint32_t id = ids_.at(static_cast<size_t>(selected_));
++    const char* name = aliases_.find(id);
++    text_id.set(to_string_hex(id, 8) + ' ' + (name ? name : "unnamed"));
++}
++
++void LutronRxView::select_id(uint32_t id) {
++    const int index = ids_.index_of(id);
++    if (index >= 0) selected_ = index;
++    show_id();
++}
++
++bool LutronRxView::record_id(uint32_t id) {
++    if (ids_.contains(id)) return true;
++    if (!lutron_store::remember_id(ids_, id)) {
++        text_info.set(ids_.contains(id) ? "cannot write LUTRON/devices.txt" : "ID list full");
++        if (ids_.contains(id)) select_id(id);
++        return false;
++    }
++    select_id(id);
++    console.writeln("ID " + to_string_hex(id, 8));
++    return true;
++}
++
++void LutronRxView::on_prev() {
++    if (ids_.size() == 0) return;
++    selected_ = static_cast<int>((static_cast<size_t>(selected_) + ids_.size() - 1) % ids_.size());
++    show_id();
++}
++
++void LutronRxView::on_next() {
++    if (ids_.size() == 0) return;
++    selected_ = static_cast<int>((static_cast<size_t>(selected_) + 1) % ids_.size());
++    show_id();
++}
++
++void LutronRxView::show_info() {
++    std::string line = "pico " + to_string_dec_uint(bursts_) + " ids " + to_string_dec_uint(ids_.size()) + " bad " + to_string_dec_uint(bad_);
++    if (subnet_.known) line += " net " + to_string_hex(lutron::subnet_word(subnet_), 6);
++    text_info.set(line);
++}
++
++void LutronRxView::on_frame(const LutronFrameMessage& message) {
++    const lutron::Frame frame = lutron::parse_frame(message.bytes, message.bits);
++    note_subnet(frame);
++    /* a transmission that does not stop where a Pico's frame ends is not a Pico (the bridge talking to a dimmer) */
++    const bool bridge = message.long_frame || message.bits < lutron::min_pico_bits;
++
++    if (logging_) {
++        log_.write_raw(to_string_dec_uint(chTimeNow()) + (bridge ? ",B," : (frame.valid ? ",P," : ",X,")) + to_string_hex(frame.id, 8) + ',' + to_string_dec_uint(frame.button) + ',' +
++                       to_string_dec_uint(frame.toggle) + ',' + to_string_dec_uint(message.bits) + ',' + to_string_dec_uint(message.level) + ',' +
++                       hex_bytes(message.bytes, (message.bits + 7) / 8));
++    }
++
++    if (bridge) {
++        bridge_++;
++        if (memcmp(bridge_prev_, message.bytes, sizeof(bridge_prev_)) != 0) {
++            memcpy(bridge_prev_, message.bytes, sizeof(bridge_prev_));
++            console.writeln("BRIDGE " + hex_bytes(message.bytes, 10));
++        }
++        show_info();
++        return;
++    }
++    if (!lutron::is_pico_frame(frame)) {
++        /* bit errors, or a bridge frame that happens to be Pico-length (set-level, beacon) */
++        if (!frame.valid) bad_++;
++        else bridge_++;
++        show_info();
++        return;
++    }
++
++    const bool recorded = record_id(static_cast<uint32_t>(frame.id));
++    bursts_++;
++    lutron::PressVoter::Press finished;
++    if (voter_.add(frame, chTimeNow(), finished)) {
++        last_ = current_;
++        last_.frame = finished.frame;
++        current_ = PressRaw{};
++        show_press(finished);
++    }
++
++    /* the press in progress, with the running vote; Save keeps the latest burst that agrees with it */
++    const auto now = voter_.current();
++    if (frame == now.frame && (frame.long_form || !current_.frame.long_form)) {
++        current_.frame = frame;
++        current_.valid = true;
++    }
++    text_live.set(describe(now));
++    text_stats.set("burst " + to_string_dec_uint(now.total) + "  held " + seconds(now.duration_ms) + "  ctr " + to_string_dec_uint(frame.counter));
++    if (recorded) show_info();
++}
++
++void LutronRxView::on_tick() {
++    lutron::PressVoter::Press finished;
++    if (voter_.idle(chTimeNow(), finished)) {
++        last_ = current_;
++        last_.frame = finished.frame;
++        current_ = PressRaw{};
++        show_press(finished);
++        text_stats.set("presses " + to_string_dec_uint(presses_));
++    }
++}
++
++void LutronRxView::show_press(const lutron::PressVoter::Press& press) {
++    presses_++;
++    console.writeln(describe(press));
++}
++
++/* the press in progress, else the last finished one */
++bool LutronRxView::target(PressRaw*& raw) {
++    if (current_.valid) {
++        raw = &current_;
++        return true;
++    }
++    if (last_.valid) {
++        raw = &last_;
++        return true;
++    }
++    return false;
++}
++
++void LutronRxView::on_name() {
++    if (selected_ < 0 || ids_.size() == 0) {
++        text_info.set("hear a Pico first");
++        return;
++    }
++    const uint32_t id = ids_.at(static_cast<size_t>(selected_));
++    const char* current = aliases_.find(id);
++    name_buffer_ = current ? current : "";
++    text_prompt(
++        nav_,
++        name_buffer_,
++        lutron::AliasTable::name_len,
++        ENTER_KEYBOARD_MODE_ALPHA,
++        [this, id](std::string& name) {
++            if (name.empty()) return;
++            if (!lutron_store::remember_alias(aliases_, id, name)) {
++                text_info.set("cannot write LUTRON/aliases.txt");
++                return;
++            }
++            show_id();
++            text_info.set("named " + to_string_hex(id, 8));
++            console.writeln(label(id) + " = " + to_string_hex(id, 8));
++        });
++}
++
++/* Stores the press for the TX app: "serial,k,button,toggle,24 bytes of the burst" */
++void LutronRxView::on_save() {
++    PressRaw* raw = nullptr;
++    if (!target(raw)) {
++        text_info.set("nothing to save");
++        return;
++    }
++    LogFile file;
++    if (file.append(saved_path())) {
++        text_info.set("cannot write LUTRON/saved.txt");
++        return;
++    }
++    const lutron::Frame& f = raw->frame;
++    file.write_raw(to_string_hex(f.id, 8) + ',' + to_string_hex(f.k, 4) + ',' + to_string_dec_uint(f.button) + ',' + to_string_dec_uint(f.toggle) + ',' + hex_bytes(f.raw, lutron::frame_bytes));
++    text_info.set("saved " + label(f.id) + " " + button_text(f.button));
++}
++
++LutronRxView::~LutronRxView() {
++    receiver_model.disable();
++    baseband::shutdown();
++}
++
++}  // namespace ui::external_app::lutron_rx
+diff --git a/firmware/application/external/lutron_rx/ui_lutron_rx.hpp b/firmware/application/external/lutron_rx/ui_lutron_rx.hpp
+new file mode 100644
+index 0000000..9358921
+--- /dev/null
++++ b/firmware/application/external/lutron_rx/ui_lutron_rx.hpp
+@@ -0,0 +1,168 @@
++/*
++ * Copyright (C) 2026 Dave Hammer
++ *
++ * This file is part of PortaPack.
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; either version 3, or (at your option)
++ * any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program; see the file COPYING.  If not, write to
++ * the Free Software Foundation, Inc., 51 Franklin Street,
++ * Boston, MA 02110-1301, USA.
++ */
++
++#ifndef __UI_LUTRON_RX_H__
++#define __UI_LUTRON_RX_H__
++
++#include "ui.hpp"
++#include "ui_navigation.hpp"
++#include "ui_receiver.hpp"
++#include "ui_freq_field.hpp"
++#include "app_settings.hpp"
++#include "radio_state.hpp"
++#include "message.hpp"
++#include "log_file.hpp"
++#include "lutron_pico.hpp"
++
++#include <string>
++
++namespace ui::external_app::lutron_rx {
++
++/* Receives Lutron Caseta Pico remotes (2-FSK 62.5 kbaud near 433.6 MHz) and lists the presses:
++ * device (alias or serial number), button and its number, toggle bit, voted over the ~14 repeated bursts of each press.
++ * Longer transmissions on the same frequency (the bridge's commands to dimmers) are shown apart.
++ *
++ * SD card, folder LUTRON (shared with Lutron TX):
++ *   devices.txt  one serial per line, written when a Pico is heard
++ *   aliases.txt  "02DD0ABF Kitchen" (Name appends a line; later lines win)
++ *   saved.txt    presses stored with Save, "serial,k,button,toggle,24 bytes"
++ *   log.csv      every burst, while the Log box is ticked
++ *   subnet.txt   six hex digits, bytes 3-5 of a bridge frame, written when one is heard */
++class LutronRxView : public View {
++   public:
++    LutronRxView(NavigationView& nav);
++    ~LutronRxView();
++
++    void focus() override;
++
++    std::string title() const override { return "Lutron RX"; };
++
++   private:
++    /* the last burst of the press in progress (the long form if there was one), for Save and Name */
++    struct PressRaw {
++        lutron::Frame frame{};
++        bool valid{false};
++    };
++
++    void on_frame(const LutronFrameMessage& message);
++    void on_tick();
++    void show_press(const lutron::PressVoter::Press& press);
++    void on_name();
++    void on_save();
++    void on_prev();
++    void on_next();
++    void show_info();
++    void show_id();
++    void load_files();
++    void note_subnet(const lutron::Frame& frame);
++    void select_id(uint32_t id);
++    bool record_id(uint32_t id);
++    bool target(PressRaw*& raw);
++    std::string label(uint64_t id) const;
++    std::string describe(const lutron::PressVoter::Press& press) const;
++
++    NavigationView& nav_;
++    /* Picos transmit on one carrier near 433.594 MHz; 433.61 MHz decoded the most bursts, see lutron_demod.hpp */
++    RxRadioState radio_state_{
++        433610000 /* frequency */,
++        500000 /* bandwidth */,
++        1000000 /* sampling rate */,
++        ReceiverModel::Mode::WidebandFMAudio};
++    app_settings::SettingsManager settings_{
++        "rx_lutron", app_settings::Mode::RX};
++
++    lutron::PressVoter voter_{};
++    lutron::AliasTable aliases_{};
++    lutron::IdTable ids_{};
++    int selected_{-1};
++    PressRaw current_{};  // the press in progress
++    PressRaw last_{};     // the last finished press
++    std::string name_buffer_{};
++    LogFile log_{};
++    bool logging_{false};
++    uint32_t presses_{0};
++    uint32_t bursts_{0};
++    uint32_t bridge_{0};
++    uint32_t bad_{0};
++    lutron::Subnet subnet_{};
++    bool subnet_warned_{false};
++    uint8_t bridge_prev_[12]{};
++
++    RxFrequencyField field_frequency{
++        {UI_POS_X(0), UI_POS_Y(0)},
++        nav_};
++    RFAmpField field_rf_amp{
++        {UI_POS_X(13), UI_POS_Y(0)}};
++    LNAGainField field_lna{
++        {UI_POS_X(15), UI_POS_Y(0)}};
++    VGAGainField field_vga{
++        {UI_POS_X(18), UI_POS_Y(0)}};
++    RSSI rssi{
++        {UI_POS_X(21), 0, UI_POS_WIDTH_REMAINING(22), 4}};
++    Channel channel{
++        {UI_POS_X(21), 5, UI_POS_WIDTH_REMAINING(22), 4}};
++
++    Text text_live{
++        {UI_POS_X(0), UI_POS_Y(1), UI_POS_MAXWIDTH, UI_POS_HEIGHT(1)},
++        "Waiting for a Pico"};
++    Text text_stats{
++        {UI_POS_X(0), UI_POS_Y(2), UI_POS_MAXWIDTH, UI_POS_HEIGHT(1)},
++        ""};
++    Text text_info{
++        {UI_POS_X(0), UI_POS_Y(3), UI_POS_MAXWIDTH, UI_POS_HEIGHT(1)},
++        ""};
++    Text text_id{
++        {UI_POS_X(0), UI_POS_Y(4), UI_POS_MAXWIDTH, UI_POS_HEIGHT(1)},
++        "no Pico ID yet"};
++    Button button_prev{
++        {UI_POS_X(0), UI_POS_Y(5), UI_POS_WIDTH(5), UI_POS_HEIGHT(2)},
++        "Prev"};
++    Button button_next{
++        {UI_POS_X(5), UI_POS_Y(5), UI_POS_WIDTH(5), UI_POS_HEIGHT(2)},
++        "Next"};
++    Button button_name{
++        {UI_POS_X(11), UI_POS_Y(5), UI_POS_WIDTH(6), UI_POS_HEIGHT(2)},
++        "Name"};
++    Button button_save{
++        {UI_POS_X(18), UI_POS_Y(5), UI_POS_WIDTH(6), UI_POS_HEIGHT(2)},
++        "Save"};
++    Checkbox check_log{
++        {UI_POS_X(25), UI_POS_Y(5)},
++        4,
++        "Log"};
++    Console console{
++        {UI_POS_X(0), UI_POS_Y(7), UI_POS_MAXWIDTH, UI_POS_HEIGHT_REMAINING(8)}};
++
++    MessageHandlerRegistration message_handler_frame{
++        Message::ID::LutronFrame,
++        [this](Message* const p) {
++            this->on_frame(*static_cast<const LutronFrameMessage*>(p));
++        }};
++    MessageHandlerRegistration message_handler_frame_sync{
++        Message::ID::DisplayFrameSync,
++        [this](const Message* const) {
++            this->on_tick();
++        }};
++};
++
++}  // namespace ui::external_app::lutron_rx
++
++#endif /*__UI_LUTRON_RX_H__*/
+diff --git a/firmware/baseband/CMakeLists.txt b/firmware/baseband/CMakeLists.txt
+index 38f499d..97c7a39 100644
+--- a/firmware/baseband/CMakeLists.txt
++++ b/firmware/baseband/CMakeLists.txt
+@@ -550,6 +550,20 @@ set(MODE_CPPSRC
+ )
+ DeclareTargets(P25T p25_tx)
+ 
++### Lutron Pico Rx
++
++set(MODE_CPPSRC
++	proc_lutron.cpp
++)
++DeclareTargets(PLUT lutron_rx)
++
++### Lutron Pico Tx
++
++set(MODE_CPPSRC
++	proc_lutron_tx.cpp
++)
++DeclareTargets(PLUX lutron_tx)
++
+ 
+ ### NRF RX
+ 
+diff --git a/firmware/baseband/lutron_demod.hpp b/firmware/baseband/lutron_demod.hpp
+new file mode 100644
+index 0000000..66eb889
+--- /dev/null
++++ b/firmware/baseband/lutron_demod.hpp
+@@ -0,0 +1,188 @@
++/*
++ * Lutron Pico receiver DSP: raw 8-bit I/Q at 1 MHz in, payload bytes of each burst out.
++ *
++ * 62.5 kbaud is exactly 16 samples per symbol at 1 MHz. Chain per sample:
++ *   DC block -> 4-tap box filter on I and Q (channel filter) -> delayed-conjugate FM
++ *   discriminator (lag 4) -> 6-tap box filter -> slicer around the midpoint of the tracked
++ *   high/low levels -> symbol clock (nudged by every edge) -> sync word hunt -> payload.
++ * Tuning: a Pico's three bursts per 75 ms slot share one carrier near 433.594 MHz with tones about
++ * +-39 kHz from it. The discriminator output stops rising at a tone offset of about 62 kHz, so
++ * the tuned frequency should be within about 20 kHz of the carrier. On a real recording tuning
++ * to 433.61 MHz decoded the most bursts (83 of 84), 433.595 MHz gave 72, 433.64 MHz only 33.
++ * The input must not clip: a Pico close to the antenna at full gain saturates the 8-bit
++ * samples and the phase is lost, lower the LNA/VGA gain if bursts at high RSSI do not decode.
++ * Bits are hunted in both polarities, so it does not matter which way the I/Q spectrum is
++ * mirrored. Header only (no firmware dependencies) so it can run on the host in the tests.
++ */
++
++#ifndef __LUTRON_DEMOD_H__
++#define __LUTRON_DEMOD_H__
++
++#include <cstddef>
++#include <cstdint>
++
++#include "lutron_pico.hpp"
++
++namespace lutron {
++
++class Demod {
++   public:
++    static constexpr int sps = 16;  // samples per symbol at 1 MHz
++
++    struct Result {
++        uint8_t bytes[payload_bytes];  // payload bits after the sync word, in the sent polarity, left aligned
++        uint16_t bits;                 // how many of them were sent: the carrier dropped after this many
++        bool long_frame;               // the carrier did not drop within max_payload_bits: not a Pico (the bridge)
++        uint8_t level;                 // signal level (peak-to-peak of the discriminator, coarse)
++    };
++
++    /* Feed one sample; true when a burst was received completely (`out` is filled). */
++    bool process(int8_t i_in, int8_t q_in, Result& out) {
++        /* DC block (the LO leakage of the radio sits at the tuned frequency) */
++        i_dc_ += i_in - (i_dc_ >> 10);
++        q_dc_ += q_in - (q_dc_ >> 10);
++        const int32_t i_clean = i_in - (i_dc_ >> 10);
++        const int32_t q_clean = q_in - (q_dc_ >> 10);
++
++        /* channel filter: box filter on I and Q */
++        i_sum_ += i_clean - i_box_[box_pos_];
++        q_sum_ += q_clean - q_box_[box_pos_];
++        i_box_[box_pos_] = i_clean;
++        q_box_[box_pos_] = q_clean;
++        box_pos_ = (box_pos_ + 1) % iq_box;
++
++        /* signal power (smoothed over ~8 us): tells when the carrier stops */
++        pwr_ += (((i_sum_ * i_sum_ + q_sum_ * q_sum_) >> 6) - pwr_) >> 3;
++        bool dropped = false;
++        if (collecting_) {
++            since_sync_++;
++            dropped = since_sync_ > 64 && pwr_ < (sync_pwr_ >> 2);
++        }
++
++        /* FM discriminator on the sample lag us back: Im(z[n] * conj(z[n-lag])) > 0 for a
++         * positive frequency offset (the +-30..50 kHz tones turn 0.2 rad per us) */
++        const int32_t i_old = i_hist_[hist_pos_];
++        const int32_t q_old = q_hist_[hist_pos_];
++        i_hist_[hist_pos_] = i_sum_;
++        q_hist_[hist_pos_] = q_sum_;
++        hist_pos_ = (hist_pos_ + 1) % lag;
++        const int32_t disc = (q_sum_ * i_old - i_sum_ * q_old) >> 4;
++
++        /* smooth over a fraction of a symbol */
++        disc_sum_ += disc - disc_box_[disc_pos_];
++        disc_box_[disc_pos_] = disc;
++        disc_pos_ = (disc_pos_ + 1) % disc_box;
++        const int32_t x = disc_sum_;
++
++        /* slicer level: midpoint of the high and low peaks, both leaking towards each other */
++        const int32_t span = hi_ - lo_;
++        hi_ -= span >> level_leak;
++        lo_ += span >> level_leak;
++        if (x > hi_) hi_ = x;
++        if (x < lo_) lo_ = x;
++        const bool bit = x > ((hi_ + lo_) >> 1);
++
++        /* symbol clock: an edge should land on phase 0, pull the clock half way towards that */
++        if (bit != last_bit_) {
++            last_bit_ = bit;
++            const int err = (phase_ < sps / 2) ? phase_ : phase_ - sps;
++            phase_ = (phase_ - err / 2) & (sps - 1);
++        }
++        phase_ = (phase_ + 1) & (sps - 1);
++        if (dropped) {
++            /* the symbols start 8 samples after the sync word's last sample point; the power takes
++             * end_delay samples to fall below the threshold once the carrier stops */
++            int32_t bits = (static_cast<int32_t>(since_sync_) - end_delay) / sps;
++            if (bits < 0) bits = 0;
++            if (static_cast<size_t>(bits) < count_) count_ = static_cast<size_t>(bits);
++            return finish(false, out);
++        }
++        if (phase_ != sps / 2) return false;
++
++        return on_symbol(bit, out);
++    }
++
++    /* Forgets everything (new frequency, new run). */
++    void reset() { *this = Demod(); }
++
++   private:
++    /* filter lengths in samples (= us), tuned on a real recording of two Picos */
++    static constexpr uint32_t iq_box = 4;    // channel filter: first null at 250 kHz, -4 dB at 130 kHz
++    static constexpr uint32_t lag = 4;       // discriminator spacing
++    static constexpr uint32_t disc_box = 6;  // smoothing of the discriminator output
++    static constexpr int level_leak = 9;
++    static constexpr uint32_t max_sync_errors = 2;      // bit errors tolerated in the 28 sync bits ...
++    static constexpr uint32_t min_preamble_edges = 26;  // ... if 26 of the 31 bit pairs before it alternate
++
++    static uint32_t popcount(uint32_t v) {
++        v = v - ((v >> 1) & 0x55555555);
++        v = (v & 0x33333333) + ((v >> 2) & 0x33333333);
++        return (((v + (v >> 4)) & 0x0F0F0F0F) * 0x01010101) >> 24;
++    }
++
++    int32_t i_dc_{0}, q_dc_{0};
++    int32_t i_box_[8]{}, q_box_[8]{};
++    int32_t i_sum_{0}, q_sum_{0};
++    int32_t i_hist_[8]{}, q_hist_[8]{};
++    int32_t disc_box_[16]{};
++    int32_t disc_sum_{0};
++    int32_t hi_{0}, lo_{0};
++    uint32_t box_pos_{0}, hist_pos_{0}, disc_pos_{0};
++    int phase_{0};
++    bool last_bit_{false};
++
++    static constexpr int32_t end_delay = -2;  // calibrated on bursts of known length: every value from -12 to +8 gives exact lengths, so this is the middle
++
++    int32_t pwr_{0};
++    uint32_t since_sync_{0};
++    int32_t sync_pwr_{0};  // power when the sync word was found: the carrier is "gone" below a quarter of it
++    uint64_t reg_{0};
++    bool collecting_{false};
++    bool inverted_{false};
++    size_t count_{0};
++    Result frame_{};
++
++    bool finish(bool long_frame, Result& out) {
++        collecting_ = false;
++        if (count_ & 7) frame_.bytes[count_ >> 3] = static_cast<uint8_t>(frame_.bytes[count_ >> 3] << (8 - (count_ & 7)));
++        frame_.bits = static_cast<uint16_t>(count_);
++        frame_.long_frame = long_frame;
++        const int32_t pp = (hi_ - lo_) >> 12;
++        frame_.level = static_cast<uint8_t>(pp > 255 ? 255 : (pp < 0 ? 0 : pp));
++        out = frame_;
++        return true;
++    }
++
++    bool on_symbol(bool bit, Result& out) {
++        if (collecting_) {
++            const uint8_t b = (bit != inverted_) ? 1 : 0;
++            frame_.bytes[count_ >> 3] = static_cast<uint8_t>((frame_.bytes[count_ >> 3] << 1) | b);
++            if (++count_ < max_payload_bits) return false;
++            return finish(true, out);  // still transmitting after a Pico's whole frame
++        }
++
++        reg_ = (reg_ << 1) | (bit ? 1 : 0);
++        const uint32_t tail = static_cast<uint32_t>(reg_) & sync_mask;
++        const uint32_t errors = popcount(tail ^ sync_word);
++        const bool normal = errors <= max_sync_errors;
++        const bool flipped = (sync_bits - errors) <= max_sync_errors;
++        if (!normal && !flipped) return false;
++
++        /* the sync word is preceded by the 1010... preamble: a long alternating run before it
++         * is what makes a sync word with a bit error or two believable */
++        const uint32_t pre = static_cast<uint32_t>(reg_ >> sync_bits);
++        if (popcount((pre ^ (pre >> 1)) & 0x7FFFFFFF) < min_preamble_edges) return false;
++
++        sync_pwr_ = pwr_;
++        since_sync_ = 0;
++        collecting_ = true;
++        inverted_ = flipped;
++        count_ = 0;
++        for (auto& b : frame_.bytes) b = 0;
++        return false;
++    }
++};
++
++}  // namespace lutron
++
++#endif /*__LUTRON_DEMOD_H__*/
+diff --git a/firmware/baseband/proc_lutron.cpp b/firmware/baseband/proc_lutron.cpp
+new file mode 100644
+index 0000000..83b65cf
+--- /dev/null
++++ b/firmware/baseband/proc_lutron.cpp
+@@ -0,0 +1,48 @@
++/*
++ * Copyright (C) 2026 Dave Hammer
++ *
++ * This file is part of PortaPack.
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; either version 3, or (at your option)
++ * any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program; see the file COPYING.  If not, write to
++ * the Free Software Foundation, Inc., 51 Franklin Street,
++ * Boston, MA 02110-1301, USA.
++ */
++
++#include "proc_lutron.hpp"
++
++#include "portapack_shared_memory.hpp"
++#include "event_m4.hpp"
++
++#include <cstring>
++
++void LutronProcessor::execute(const buffer_c8_t& buffer) {
++    lutron::Demod::Result result;
++
++    for (size_t i = 0; i < buffer.count; i++) {
++        if (demod.process(buffer.p[i].real(), buffer.p[i].imag(), result)) {
++            LutronFrameMessage message;
++            memcpy(message.bytes, result.bytes, sizeof(message.bytes));
++            message.bits = result.bits;
++            message.long_frame = result.long_frame;
++            message.level = result.level;
++            shared_memory.application_queue.push(message);
++        }
++    }
++}
++
++int main() {
++    EventDispatcher event_dispatcher{std::make_unique<LutronProcessor>()};
++    event_dispatcher.run();
++    return 0;
++}
+diff --git a/firmware/baseband/proc_lutron.hpp b/firmware/baseband/proc_lutron.hpp
+new file mode 100644
+index 0000000..428d0c5
+--- /dev/null
++++ b/firmware/baseband/proc_lutron.hpp
+@@ -0,0 +1,45 @@
++/*
++ * Copyright (C) 2026 Dave Hammer
++ *
++ * This file is part of PortaPack.
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; either version 3, or (at your option)
++ * any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program; see the file COPYING.  If not, write to
++ * the Free Software Foundation, Inc., 51 Franklin Street,
++ * Boston, MA 02110-1301, USA.
++ */
++
++#ifndef __PROC_LUTRON_H__
++#define __PROC_LUTRON_H__
++
++#include "baseband_processor.hpp"
++#include "baseband_thread.hpp"
++#include "rssi_thread.hpp"
++
++#include "lutron_demod.hpp"
++
++class LutronProcessor : public BasebandProcessor {
++   public:
++    void execute(const buffer_c8_t& buffer) override;
++
++   private:
++    static constexpr size_t baseband_fs = 1000000;  // 62.5 kbaud = 16 samples per symbol
++
++    lutron::Demod demod{};
++
++    /* NB: Threads should be the last members in the class definition. */
++    BasebandThread baseband_thread{baseband_fs, this, baseband::Direction::Receive};
++    RSSIThread rssi_thread{};
++};
++
++#endif /*__PROC_LUTRON_H__*/
+diff --git a/firmware/common/lutron_pico.hpp b/firmware/common/lutron_pico.hpp
+new file mode 100644
+index 0000000..8782b4f
+--- /dev/null
++++ b/firmware/common/lutron_pico.hpp
+@@ -0,0 +1,648 @@
++/*
++ * Lutron Caseta Pico remotes (Clear Connect Type A, 2-FSK 62.5 kbaud near 433.6 MHz): frame
++ * layout, CRC, frame builder, and the press grouping / majority vote.
++ *
++ * Header only and free of firmware dependencies so the baseband (M4), the application (M0)
++ * and the host unit tests share the same code. The byte layout matches l-re/lutron_pico.py.
++ *
++ * On the air: 80 bits of 1010..., UART bytes FF FA DE (the 28-bit sync word sits inside those
++ * three bytes), then 24 bytes. Each byte is start 0, 8 data bits LSB first, stop 1. The carrier
++ * then stops. The next burst is 75 ms after the start of this one. Repeats of one press step
++ * byte 1 by +6. A new press flips the toggle bit.
++ *
++ * The 24 bytes, after FA DE:
++ *   0       press 0x88/0x8a, release 0x89/0x8b. Bit 0x02 is the toggle. Bit 0x01 means release.
++ *   1       sequence
++ *   2-5     the Pico's serial, big endian (the number printed on the label)
++ *   6       0x21
++ *   7-11    on/off/favorite press: 04 03 00 <button> 00
++ *           raise/lower press:     0c 03 00 <button> 00
++ *           any release:           0e 03 00 <button> 01
++ *   10      button: 2 On, 3 Favorite, 4 Off, 5 Raise, 6 Lower
++ *   12-21   on/off/favorite press: ten 0xCC
++ *           otherwise the serial again and a short tail (see build_frame)
++ *   22,23   CRC-16, big endian, of the first 22 bytes. Polynomial 0xCA0F, init 0, no reflection,
++ *           no final XOR. The data byte is added into the low half of the register. A textbook
++ *           CRC of the same polynomial does not match; body_crc() is the update that does.
++ */
++
++#ifndef __LUTRON_PICO_H__
++#define __LUTRON_PICO_H__
++
++#include <cstddef>
++#include <cstdint>
++
++namespace lutron {
++
++constexpr uint32_t sync_bits = 28;
++constexpr uint32_t sync_word = 0b1111111100101111110011110111;
++constexpr uint32_t sync_mask = (1u << sync_bits) - 1;
++
++/* A Pico burst carries 240 bits after the sync word and then the carrier stops (it measures as 239 to
++ * 244 because of the ring-down), a longer transmission (the bridge's commands to dimmers etc.) keeps
++ * going. Up to max_payload_bits are kept, the real length is measured from the moment the carrier drops. */
++constexpr size_t max_payload_bits = 256;
++constexpr size_t payload_bytes = max_payload_bits / 8;
++constexpr size_t frame_bytes = 24;
++constexpr size_t frame_bits = frame_bytes * 10;
++constexpr size_t min_pico_bits = 232;  // fewer than this is not a Pico frame
++
++enum Button : uint8_t {
++    button_on = 2,
++    button_favorite = 3,
++    button_off = 4,
++    button_raise = 5,
++    button_lower = 6,
++};
++
++inline const char* button_name(uint8_t number) {
++    switch (number) {
++        case button_on:
++            return "ON";
++        case button_off:
++            return "OFF";
++        case button_raise:
++            return "RAISE";
++        case button_lower:
++            return "LOWER";
++        case button_favorite:
++            return "FAVORITE";
++        default:
++            return "?";
++    }
++}
++
++/* n (<= 32) bits starting at bit `pos`, bit 0 = MSB of byte 0. */
++inline uint32_t get_bits(const uint8_t* bytes, uint32_t pos, uint32_t n) {
++    uint32_t value = 0;
++    for (uint32_t i = 0; i < n; i++) {
++        const uint32_t bit = pos + i;
++        value = (value << 1) | ((bytes[bit >> 3] >> (7 - (bit & 7))) & 1);
++    }
++    return value;
++}
++
++/* Lutron's CRC-16: polynomial 0xCA0F, initial value 0, MSB first, no final XOR. */
++inline uint16_t crc16(const uint8_t* data, size_t length) {
++    uint16_t crc = 0;
++    for (size_t i = 0; i < length; i++) {
++        crc ^= static_cast<uint16_t>(data[i]) << 8;
++        for (int bit = 0; bit < 8; bit++) crc = (crc & 0x8000) ? static_cast<uint16_t>((crc << 1) ^ 0xCA0F) : static_cast<uint16_t>(crc << 1);
++    }
++    return crc;
++}
++
++/* What the CRC field should be for k = 0 (see the layout above). */
++inline uint16_t frame_crc(const uint8_t* b) {
++    return static_cast<uint16_t>(crc16(b, 20) ^ ((b[20] << 8) | b[21]));
++}
++
++/* The Pico's constant, from a frame it really sent. */
++inline uint16_t frame_k(const uint8_t* b) {
++    return static_cast<uint16_t>(frame_crc(b) ^ ((b[22] << 8) | b[23]));
++}
++
++/* The 24 bytes out of `bits` serial-style bits (MSB first): false if there are too few or a start/stop bit is wrong. */
++inline bool unframe(const uint8_t* bits, size_t count, uint8_t* out) {
++    if (count < frame_bits) return false;
++    for (size_t i = 0; i < frame_bytes; i++) {
++        const size_t at = i * 10;
++        if (get_bits(bits, static_cast<uint32_t>(at), 1) != 0 || get_bits(bits, static_cast<uint32_t>(at + 9), 1) != 1) return false;
++        uint8_t value = 0;
++        for (int k = 0; k < 8; k++) value |= static_cast<uint8_t>(get_bits(bits, static_cast<uint32_t>(at + 1 + k), 1) << k);
++        out[i] = value;
++    }
++    return true;
++}
++
++/* 24 bytes -> 240 serial-style bits (MSB first, left aligned). */
++inline void frame_to_bits(const uint8_t* bytes, uint8_t* out) {
++    for (size_t i = 0; i < payload_bytes; i++) out[i] = 0;
++    for (size_t i = 0; i < frame_bytes; i++) {
++        const size_t at = i * 10;
++        // start bit 0 is already zero
++        for (int k = 0; k < 8; k++) {
++            if ((bytes[i] >> k) & 1) out[(at + 1 + k) >> 3] |= static_cast<uint8_t>(0x80 >> ((at + 1 + k) & 7));
++        }
++        out[(at + 9) >> 3] |= static_cast<uint8_t>(0x80 >> ((at + 9) & 7));  // stop bit 1
++    }
++}
++
++struct Frame {
++    uint64_t id;      // the serial number
++    uint8_t button;   // button number
++    uint8_t toggle;
++    bool release;     // type 0x89/0x8b; a release is not another copy of the press
++    uint8_t counter;
++    bool long_form;
++    bool valid;       // all start and stop bits were right
++    uint16_t k;       // textbook CRC difference; 0 when body_crc matches the frame
++    uint8_t raw[frame_bytes];
++
++    /* what makes two bursts the same press */
++    bool operator==(const Frame& o) const {
++        return id == o.id && button == o.button && toggle == o.toggle && release == o.release;
++    }
++};
++
++/* `bytes` holds the payload bits after the sync word, `bits` of them. */
++inline Frame parse_frame(const uint8_t* bytes, size_t bits) {
++    Frame f{};
++    f.valid = unframe(bytes, bits, f.raw);
++    f.id = (static_cast<uint64_t>(f.raw[2]) << 24) | (static_cast<uint64_t>(f.raw[3]) << 16) | (static_cast<uint64_t>(f.raw[4]) << 8) | f.raw[5];
++    f.button = f.raw[10];
++    f.toggle = (f.raw[0] >> 1) & 1;
++    f.release = (f.raw[0] & 1) != 0;
++    f.counter = f.raw[1];
++    f.long_form = (f.raw[7] == 0x0C) || (f.raw[7] == 0x0E);
++    f.k = frame_k(f.raw);
++    return f;
++}
++
++/* CRC of the 22-byte body. The update adds each byte into the low half of the register. */
++inline uint16_t body_crc(const uint8_t* data) {
++    uint16_t crc = 0;
++    for (size_t i = 0; i < 22; i++) {
++        uint16_t table = static_cast<uint16_t>(crc >> 8) << 8;
++        for (int bit = 0; bit < 8; bit++) {
++            table = (table & 0x8000) ? static_cast<uint16_t>((table << 1) ^ 0xCA0F) : static_cast<uint16_t>(table << 1);
++        }
++        crc = static_cast<uint16_t>((((crc << 8) & 0xFF00) + data[i]) ^ table);
++    }
++    return crc;
++}
++
++inline int hex_digit(char c) {
++    if (c >= '0' && c <= '9') return c - '0';
++    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
++    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
++    return -1;
++}
++
++/* Eight hex digits, the serial printed on the Pico. Zero is rejected. */
++inline bool parse_id(const char* text, size_t length, uint32_t& id) {
++    if (length != 8) return false;
++    uint32_t value = 0;
++    for (size_t i = 0; i < 8; i++) {
++        const int digit = hex_digit(text[i]);
++        if (digit < 0) return false;
++        value = (value << 4) | static_cast<uint32_t>(digit);
++    }
++    if (value == 0) return false;
++    id = value;
++    return true;
++}
++
++enum class Action : uint8_t { Press, Release };
++
++constexpr uint8_t tx_repeat_default = 14;
++constexpr uint8_t tx_repeat_cap = 20;
++
++/* A press or release the bridge and a paired dimmer accept. False if the button is unknown. */
++struct Build {
++    uint32_t serial{0};
++    uint8_t button{button_on};
++    Action action{Action::Press};
++    uint8_t seq{0};
++    uint8_t toggle{0};
++};
++
++inline bool known_button(uint8_t button) {
++    return button >= button_on && button <= button_lower;
++}
++
++inline bool is_pico_frame(const Frame& f) {
++    return f.valid && ((f.raw[0] & 0xFC) == 0x88) && f.raw[6] == 0x21 && known_button(f.button);
++}
++
++inline bool build_frame(const Build& p, uint8_t* b) {
++    if (!known_button(p.button) || p.serial == 0) return false;
++    const bool dim = p.button == button_raise || p.button == button_lower;
++    const bool press = p.action == Action::Press;
++    uint8_t type = press ? 0x88 : 0x89;
++    if (p.toggle & 1) type = static_cast<uint8_t>(type | 0x02);
++    b[0] = type;
++    b[1] = p.seq;
++    for (int i = 0; i < 4; i++) b[2 + i] = static_cast<uint8_t>(p.serial >> (24 - 8 * i));
++    b[6] = 0x21;
++    b[8] = 0x03;
++    b[9] = 0x00;
++    b[10] = p.button;
++    if (press && !dim) {
++        b[7] = 0x04;
++        b[11] = 0x00;
++        for (int i = 12; i < 22; i++) b[i] = 0xCC;
++    } else if (press) {
++        b[7] = 0x0C;
++        b[11] = 0x00;
++        for (int i = 0; i < 4; i++) b[12 + i] = b[2 + i];
++        b[16] = 0x00;
++        b[17] = 0x42;
++        b[18] = 0x00;
++        b[19] = p.button == button_raise ? 0x03 : 0x02;
++        b[20] = 0xCC;
++        b[21] = 0xCC;
++    } else if (!dim) {
++        b[7] = 0x0E;
++        b[11] = 0x01;
++        for (int i = 0; i < 4; i++) b[12 + i] = b[2 + i];
++        b[16] = 0x00;
++        b[17] = 0x40;
++        b[18] = 0x00;
++        b[19] = static_cast<uint8_t>(0x1E + p.button);
++        b[20] = 0x00;
++        b[21] = 0x00;
++    } else {
++        b[7] = 0x0E;
++        b[11] = 0x01;
++        for (int i = 0; i < 4; i++) b[12 + i] = b[2 + i];
++        b[16] = 0x00;
++        b[17] = 0x42;
++        b[18] = 0x02;
++        b[19] = p.button == button_raise ? 0x01 : 0x00;
++        b[20] = 0x01;
++        b[21] = 0x33;
++    }
++    const uint16_t crc = body_crc(b);
++    b[22] = static_cast<uint8_t>(crc >> 8);
++    b[23] = static_cast<uint8_t>(crc);
++    return true;
++}
++
++/* Bytes 3-5 of a bridge frame. Byte 2 is the A1/A3 flag and is not part of this.
++ * Learned from the air and stored in LUTRON/subnet.txt. Not a device serial. */
++struct Subnet {
++    uint8_t b0{0};
++    uint8_t b1{0};
++    uint8_t b2{0};
++    bool known{false};
++};
++
++inline uint32_t subnet_word(const Subnet& subnet) {
++    return (static_cast<uint32_t>(subnet.b0) << 16) | (static_cast<uint32_t>(subnet.b1) << 8) | subnet.b2;
++}
++
++/* Six hex digits, "AABBCC". Later lines win. */
++inline bool parse_subnet_line(const char* text, size_t length, Subnet& out) {
++    size_t i = 0;
++    while (i < length && (text[i] == ' ' || text[i] == '\t')) i++;
++    if (length - i < 6) return false;
++    uint32_t value = 0;
++    for (int k = 0; k < 6; k++) {
++        const int digit = hex_digit(text[i + static_cast<size_t>(k)]);
++        if (digit < 0) return false;
++        value = (value << 4) | static_cast<uint32_t>(digit);
++    }
++    for (size_t j = i + 6; j < length; j++) {
++        if (text[j] != ' ' && text[j] != '\t' && text[j] != '\r') return false;
++    }
++    out.b0 = static_cast<uint8_t>(value >> 16);
++    out.b1 = static_cast<uint8_t>(value >> 8);
++    out.b2 = static_cast<uint8_t>(value);
++    out.known = true;
++    return true;
++}
++
++/* True when `raw` is a CRC-good bridge body (set-level or beacon). Pico frames are not. */
++inline bool bridge_subnet(const uint8_t* raw, Subnet& out) {
++    if (raw == nullptr) return false;
++    if ((raw[0] & 0xFC) == 0x88) return false;
++    if (raw[2] != 0xA1 && raw[2] != 0xA3) return false;
++    if (raw[6] != 0x21) return false;
++    const uint16_t crc = body_crc(raw);
++    if (raw[22] != static_cast<uint8_t>(crc >> 8) || raw[23] != static_cast<uint8_t>(crc)) return false;
++    out.b0 = raw[3];
++    out.b1 = raw[4];
++    out.b2 = raw[5];
++    out.known = true;
++    return true;
++}
++
++/* Bridge set-level. Bytes 9-12 are the dimmer serial. Bytes 3-5 come from `subnet`.
++ * 0 is off and 100 is 0xFEFF. Fade is one quarter-second.
++ * `train` false is the single 0xA1 burst (seq 0x01). `train` true is one slot of the
++ * 0xA3 repeat train (seq starts at 0x82 and steps by 6). */
++constexpr uint16_t level_full = 0xFEFF;
++
++inline uint16_t level_word(uint8_t percent) {
++    if (percent >= 100) return level_full;
++    return static_cast<uint16_t>((static_cast<uint32_t>(percent) * level_full) / 100);
++}
++
++struct LevelBuild {
++    uint32_t target{0};
++    uint8_t type{0x81};  // 0x81, 0x82, or 0x83, one value for a whole command
++    uint8_t seq{0x01};
++    bool train{false};
++    uint8_t percent{0};
++    Subnet subnet{};
++};
++
++inline bool build_level(const LevelBuild& p, uint8_t* b) {
++    if (p.target == 0 || p.percent > 100 || !p.subnet.known) return false;
++    if (p.type < 0x81 || p.type > 0x83) return false;
++    const uint16_t word = level_word(p.percent);
++    b[0] = p.type;
++    b[1] = p.seq;
++    b[2] = p.train ? 0xA3 : 0xA1;
++    b[3] = p.subnet.b0;
++    b[4] = p.subnet.b1;
++    b[5] = p.subnet.b2;
++    b[6] = 0x21;
++    b[7] = 0x0E;
++    b[8] = 0x00;
++    for (int i = 0; i < 4; i++) b[9 + i] = static_cast<uint8_t>(p.target >> (24 - 8 * i));
++    b[13] = 0xFE;
++    b[14] = 0x40;
++    b[15] = 0x02;
++    b[16] = static_cast<uint8_t>(word >> 8);
++    b[17] = static_cast<uint8_t>(word);
++    b[18] = 0x00;
++    b[19] = 0x01;
++    b[20] = 0x00;
++    b[21] = 0x00;
++    const uint16_t crc = body_crc(b);
++    b[22] = static_cast<uint8_t>(crc >> 8);
++    b[23] = static_cast<uint8_t>(crc);
++    return true;
++}
++
++/*
++ * Names for device ids, loaded from "id name" lines (later lines win): "0577285FB4 Kitchen Pico".
++ * Fixed size, no allocation (the app has very little RAM).
++ */
++class AliasTable {
++   public:
++    static constexpr size_t max_entries = 32;
++    static constexpr size_t name_len = 12;
++
++    /* One line of the file; false if it is not "<1-10 hex digits><space or , or =><name>". */
++    bool add_line(const char* line, size_t length) {
++        size_t i = 0;
++        uint64_t id = 0;
++        size_t digits = 0;
++        while (i < length && hex_value(line[i]) >= 0 && digits < 10) {
++            id = (id << 4) | static_cast<uint64_t>(hex_value(line[i]));
++            i++;
++            digits++;
++        }
++        if (digits == 0 || i >= length) return false;
++        if (line[i] != ' ' && line[i] != '\t' && line[i] != ',' && line[i] != '=') return false;
++        while (i < length && (line[i] == ' ' || line[i] == '\t' || line[i] == ',' || line[i] == '=')) i++;
++        size_t end = length;
++        while (end > i && (line[end - 1] == ' ' || line[end - 1] == '\r' || line[end - 1] == '\n' || line[end - 1] == '\t')) end--;
++        if (end == i) return false;
++        char name[name_len + 1];
++        size_t n = 0;
++        while (i < end && n < name_len) name[n++] = line[i++];
++        name[n] = 0;
++        return set(id, name);
++    }
++
++    bool set(uint64_t id, const char* name) {
++        size_t slot = count_;
++        for (size_t k = 0; k < count_; k++) {
++            if (id_[k] == id) {
++                slot = k;
++                break;
++            }
++        }
++        if (slot == max_entries) return false;
++        if (slot == count_) count_++;
++        id_[slot] = id;
++        size_t n = 0;
++        while (name[n] && n < name_len) {
++            name_[slot][n] = name[n];
++            n++;
++        }
++        name_[slot][n] = 0;
++        return true;
++    }
++
++    /* nullptr if the id has no name */
++    const char* find(uint64_t id) const {
++        for (size_t k = 0; k < count_; k++) {
++            if (id_[k] == id) return name_[k];
++        }
++        return nullptr;
++    }
++
++    size_t size() const { return count_; }
++    uint64_t id_at(size_t index) const { return id_[index]; }
++
++   private:
++    static int hex_value(char c) {
++        if (c >= '0' && c <= '9') return c - '0';
++        if (c >= 'a' && c <= 'f') return c - 'a' + 10;
++        if (c >= 'A' && c <= 'F') return c - 'A' + 10;
++        return -1;
++    }
++
++    uint64_t id_[max_entries]{};
++    char name_[max_entries][name_len + 1]{};
++    size_t count_{0};
++};
++
++/* Serial numbers recorded from the air or typed in. Fixed size, no allocation. */
++class IdTable {
++   public:
++    static constexpr size_t max_entries = 32;
++
++    bool contains(uint32_t id) const { return index_of(id) >= 0; }
++
++    /* False when the table is full or the id is already present. */
++    bool add(uint32_t id) {
++        if (id == 0 || contains(id)) return false;
++        if (count_ == max_entries) return false;
++        id_[count_++] = id;
++        return true;
++    }
++
++    /* A line "02DD0ABF" or "02DD0ABF anything". False if it is not an 8-digit serial. */
++    bool add_line(const char* line, size_t length) {
++        uint32_t id = 0;
++        if (!take_id(line, length, id)) return false;
++        if (contains(id)) return true;
++        return add(id);
++    }
++
++    int index_of(uint32_t id) const {
++        for (size_t i = 0; i < count_; i++) {
++            if (id_[i] == id) return static_cast<int>(i);
++        }
++        return -1;
++    }
++
++    uint32_t at(size_t index) const { return id_[index]; }
++    size_t size() const { return count_; }
++
++   private:
++    static bool take_id(const char* line, size_t length, uint32_t& id) {
++        size_t i = 0;
++        while (i < length && (line[i] == ' ' || line[i] == '\t')) i++;
++        if (length - i < 8) return false;
++        if (!parse_id(line + i, 8, id)) return false;
++        if (i + 8 < length && hex_digit(line[i + 8]) >= 0) return false;
++        return true;
++    }
++
++    uint32_t id_[max_entries]{};
++    size_t count_{0};
++};
++
++/* Toggle bit of the next press for a serial. A press uses it and then flips it.
++ * A release uses the other bit (the press it belongs to) and leaves this value alone. */
++class ToggleTable {
++   public:
++    static constexpr size_t max_entries = 32;
++
++    uint8_t get(uint32_t id) const {
++        const int slot = index_of(id);
++        return slot < 0 ? 0 : bit_[slot];
++    }
++
++    bool set(uint32_t id, uint8_t bit) {
++        bit = static_cast<uint8_t>(bit & 1);
++        const int slot = index_of(id);
++        if (slot >= 0) {
++            bit_[slot] = bit;
++            return true;
++        }
++        if (count_ == max_entries) return false;
++        id_[count_] = id;
++        bit_[count_] = bit;
++        count_++;
++        return true;
++    }
++
++    /* "02DD0ABF 1". Later lines for the same serial win. */
++    bool add_line(const char* line, size_t length) {
++        size_t i = 0;
++        while (i < length && (line[i] == ' ' || line[i] == '\t')) i++;
++        uint32_t id = 0;
++        if (length - i < 8 || !parse_id(line + i, 8, id)) return false;
++        i += 8;
++        if (i < length && hex_digit(line[i]) >= 0) return false;
++        while (i < length && (line[i] == ' ' || line[i] == '\t' || line[i] == ',' || line[i] == '=')) i++;
++        if (i >= length || (line[i] != '0' && line[i] != '1')) return false;
++        return set(id, static_cast<uint8_t>(line[i] - '0'));
++    }
++
++    size_t size() const { return count_; }
++
++   private:
++    int index_of(uint32_t id) const {
++        for (size_t i = 0; i < count_; i++) {
++            if (id_[i] == id) return static_cast<int>(i);
++        }
++        return -1;
++    }
++
++    uint32_t id_[max_entries]{};
++    uint8_t bit_[max_entries]{};
++    size_t count_{0};
++};
++
++
++/*
++ * Groups bursts into presses and votes. Bursts less than gap_ms apart belong to the same press;
++ * the answer is the most common (id, button, toggle) of the group, `agree` of `total` bursts.
++ * Keeps a few candidates only (a corrupted burst makes a one-off candidate); when the table is
++ * full the weakest one is replaced, which is exact as long as the real answer is the majority.
++ */
++class PressVoter {
++   public:
++    static constexpr uint32_t gap_ms = 500;
++
++    struct Press {
++        Frame frame;
++        uint16_t agree;
++        uint16_t total;
++        uint32_t start_ms;
++        uint32_t duration_ms;  // first burst to last burst (a held button repeats until released)
++    };
++
++    /* Adds a burst. A quiet gap, or a release after the press it ends, finishes the previous
++     * group and returns it in `done`. A bad burst of the same press stays in the group and is voted down. */
++    bool add(const Frame& f, uint32_t now_ms, Press& done) {
++        bool closed = false;
++        const bool gap = total_ && (now_ms - last_ms_) >= gap_ms;
++        const Frame& cur = result().frame;
++        /* A release of this button ends the press even inside the gap. A corrupted burst
++         * (different id, button, or toggle) stays in the group and is outvoted. */
++        const bool release_edge = total_ && f.release != cur.release && f.id == cur.id && f.button == cur.button && f.toggle == cur.toggle;
++        if (gap || release_edge) {
++            done = result();
++            closed = true;
++            reset();
++        }
++        if (!total_) start_ms_ = now_ms;
++        last_ms_ = now_ms;
++        total_++;
++
++        size_t weakest = 0;
++        bool found = false;
++        for (size_t i = 0; i < used_; i++) {
++            if (cand_[i].frame == f) {
++                cand_[i].count++;
++                found = true;
++                break;
++            }
++            if (cand_[i].count < cand_[weakest].count) weakest = i;
++        }
++        if (!found) {
++            if (used_ < max_candidates) {
++                cand_[used_++] = {f, 1};
++            } else {
++                cand_[weakest] = {f, 1};
++            }
++        }
++        return closed;
++    }
++
++    /* Call regularly: closes the press once no burst has arrived for gap_ms. */
++    bool idle(uint32_t now_ms, Press& done) {
++        if (total_ && (now_ms - last_ms_) >= gap_ms) {
++            done = result();
++            reset();
++            return true;
++        }
++        return false;
++    }
++
++    bool active() const { return total_ != 0; }
++
++    /* The running answer of the press in progress (valid while active()). */
++    Press current() const { return result(); }
++
++   private:
++    static constexpr size_t max_candidates = 4;
++
++    struct Candidate {
++        Frame frame;
++        uint16_t count;
++    };
++
++    Candidate cand_[max_candidates]{};
++    size_t used_{0};
++    uint16_t total_{0};
++    uint32_t start_ms_{0};
++    uint32_t last_ms_{0};
++
++    Press result() const {
++        size_t best = 0;
++        for (size_t i = 1; i < used_; i++) {
++            if (cand_[i].count > cand_[best].count) best = i;
++        }
++        return {cand_[best].frame, cand_[best].count, total_, start_ms_, last_ms_ - start_ms_};
++    }
++
++    void reset() {
++        used_ = 0;
++        total_ = 0;
++    }
++};
++
++}  // namespace lutron
++
++#endif /*__LUTRON_PICO_H__*/
+diff --git a/firmware/common/message.hpp b/firmware/common/message.hpp
+index 475fcf5..486b4cd 100644
+--- a/firmware/common/message.hpp
++++ b/firmware/common/message.hpp
+@@ -158,6 +158,8 @@ class Message {
+         TimeSinkConfig = 100,
+         EPIRBTXData = 101,
+         P25TxConfigure = 102,
++        LutronFrame = 103,
++        LutronTxConfigure = 104,
+         MAX
+     };
+ 
+@@ -1861,4 +1863,26 @@ class NotificationDataMessage : public Message {
+     uint16_t timeout = 10000;
+ };
+ 
++
++/* One received Lutron burst: the payload after the sync word (see lutron_pico.hpp). */
++struct LutronFrameMessage : public Message {
++    constexpr LutronFrameMessage()
++        : Message{ID::LutronFrame} {}
++
++    uint8_t bytes[32] = {0};  // lutron::payload_bytes, left aligned
++    uint16_t bits = 0;        // payload bits actually sent
++    bool long_frame = false;  // still transmitting after a Pico's whole frame: not a Pico (the bridge)
++    uint8_t level = 0;
++};
++
++/* Play `count` Pico bodies already written to shared_memory.bb_data (24 bytes each). */
++class LutronTxConfigureMessage : public Message {
++   public:
++    constexpr LutronTxConfigureMessage(const uint8_t count)
++        : Message{ID::LutronTxConfigure},
++          count{count} {
++    }
++
++    const uint8_t count;
++};
+ #endif /*__MESSAGE_H__*/
+diff --git a/firmware/common/spi_image.hpp b/firmware/common/spi_image.hpp
+index 6c9fde3..2c13db8 100644
+--- a/firmware/common/spi_image.hpp
++++ b/firmware/common/spi_image.hpp
+@@ -90,6 +90,8 @@ constexpr image_tag_t image_tag_ert{'P', 'E', 'R', 'T'};
+ constexpr image_tag_t image_tag_epirb_rx{'P', 'E', 'P', 'I'};
+ constexpr image_tag_t image_tag_epirb_tx{'P', 'E', 'P', 'T'};
+ constexpr image_tag_t image_tag_p25_tx{'P', '2', '5', 'T'};
++constexpr image_tag_t image_tag_lutron_rx{'P', 'L', 'U', 'T'};
++constexpr image_tag_t image_tag_lutron_tx{'P', 'L', 'U', 'X'};
+ constexpr image_tag_t image_tag_nfm_audio{'P', 'N', 'F', 'M'};
+ constexpr image_tag_t image_tag_pocsag{'P', 'P', 'O', 'C'};
+ constexpr image_tag_t image_tag_pocsag2{'P', 'P', 'O', '2'};
+diff --git a/firmware/test/baseband/CMakeLists.txt b/firmware/test/baseband/CMakeLists.txt
+index 61c09cb..da932d1 100644
+--- a/firmware/test/baseband/CMakeLists.txt
++++ b/firmware/test/baseband/CMakeLists.txt
+@@ -34,6 +34,7 @@ set(CMAKE_CXX_COMPILER g++)
+ add_executable(baseband_test EXCLUDE_FROM_ALL
+ 	${PROJECT_SOURCE_DIR}/main.cpp
+ 	${PROJECT_SOURCE_DIR}/dsp_fft_test.cpp
++	${PROJECT_SOURCE_DIR}/lutron_test.cpp
+ 	${COMMON}/dsp_fft.cpp
+ )
+ 
+diff --git a/firmware/test/baseband/lutron_test.cpp b/firmware/test/baseband/lutron_test.cpp
+new file mode 100644
+index 0000000..c798bab
+--- /dev/null
++++ b/firmware/test/baseband/lutron_test.cpp
+@@ -0,0 +1,488 @@
++/*
++ * Copyright (C) 2026 Dave Hammer
++ *
++ * This file is part of PortaPack.
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; either version 2, or (at your option)
++ * any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program; see the file COPYING.  If not, write to
++ * the Free Software Foundation, Inc., 51 Franklin Street,
++ * Boston, MA 02110-1301, USA.
++ */
++
++#include "lutron_demod.hpp"
++#include "lutron_mod.hpp"
++#include "lutron_pico.hpp"
++#include "doctest.h"
++
++#include <cmath>
++#include <cstring>
++#include <string>
++#include <vector>
++
++using namespace lutron;
++
++namespace {
++
++/* Frames received from a real Pico (device 0577285FB4, ON, toggle 1): the bytes after the sync word.
++ * It sends two kinds of burst per slot, 241 and 244 bits long. */
++const uint8_t real_on_241[payload_bytes] = {
++    0x28, 0xD0, 0x12, 0x05, 0x77, 0x28, 0x5F, 0xB4, 0x24, 0x41, 0x60, 0x40, 0x12, 0x04, 0x01, 0x19,
++    0xC6, 0x71, 0x9C, 0x67, 0x19, 0xC6, 0x71, 0x9C, 0x67, 0x7B, 0x5A, 0x10, 0x00, 0x00, 0x00, 0x00};
++const size_t real_on_241_bits = 241;
++const uint8_t real_on_244[payload_bytes] = {
++    0x28, 0xC0, 0x12, 0x05, 0x77, 0x28, 0x5F, 0xB4, 0x24, 0x41, 0x60, 0x40, 0x12, 0x04, 0x01, 0x19,
++    0xC6, 0x71, 0x9C, 0x67, 0x19, 0xC6, 0x71, 0x9C, 0x67, 0x5A, 0xDE, 0x70, 0x00, 0x00, 0x00, 0x00};
++const size_t real_on_244_bits = 244;
++
++std::vector<int> payload_as_bits(const uint8_t* payload, size_t bits) {
++    std::vector<int> v;
++    for (int i = 0; i < 90; i++) v.push_back((i & 1) ? 0 : 1);  // preamble 1010...
++    for (int i = sync_bits - 1; i >= 0; i--) v.push_back((sync_word >> i) & 1);
++    for (size_t i = 0; i < bits; i++) v.push_back((payload[i >> 3] >> (7 - (i & 7))) & 1);
++    return v;
++}
++
++/* 1 MS/s 8-bit I/Q of a 2-FSK burst (16 us per bit, smoothed tone changes) between stretches of noise. */
++std::vector<int8_t> make_signal(const std::vector<int>& bits, double carrier_hz, double deviation_hz, double amplitude, double noise, bool mirror) {
++    uint32_t seed = 12345;
++    auto rnd = [&seed]() {
++        seed = seed * 1664525u + 1013904223u;
++        return ((seed >> 8) & 0xFFFF) / 65535.0 - 0.5;
++    };
++
++    std::vector<double> freq(3000, 0.0);  // silence before the burst
++    std::vector<bool> active(3000, false);
++    for (int b : bits) {
++        for (int k = 0; k < Demod::sps; k++) {
++            freq.push_back(carrier_hz + (b ? deviation_hz : -deviation_hz));
++            active.push_back(true);
++        }
++    }
++    for (int k = 0; k < 3000; k++) {
++        freq.push_back(0.0);
++        active.push_back(false);
++    }
++
++    std::vector<int8_t> out;
++    double phase = 0.0;
++    for (size_t n = 0; n < freq.size(); n++) {
++        double f = 0.0;  // 8-sample moving average of the tone: the transitions are not instantaneous
++        for (int k = 0; k < 8; k++) f += freq[n >= (size_t)k ? n - k : 0];
++        f /= 8.0;
++        phase += 2.0 * M_PI * f / 1e6;
++        const double a = active[n] ? amplitude : 0.0;
++        double i = a * std::cos(phase) + noise * rnd();
++        double q = a * std::sin(phase) + noise * rnd();
++        if (mirror) q = -q;
++        out.push_back(static_cast<int8_t>(std::lround(i)));
++        out.push_back(static_cast<int8_t>(std::lround(q)));
++    }
++    return out;
++}
++
++/* Runs the signal through the demodulator, returns the number of frames and keeps the last. */
++int run(const std::vector<int8_t>& iq, Demod::Result& last) {
++    Demod demod;
++    int frames = 0;
++    for (size_t k = 0; k + 1 < iq.size(); k += 2) {
++        Demod::Result r;
++        if (demod.process(iq[k], iq[k + 1], r)) {
++            frames++;
++            last = r;
++        }
++    }
++    return frames;
++}
++
++/* the first `bits` bits of two payloads are the same */
++bool same_bits(const uint8_t* a, const uint8_t* b, size_t bits) {
++    for (size_t i = 0; i < bits; i++) {
++        if (((a[i >> 3] >> (7 - (i & 7))) & 1) != ((b[i >> 3] >> (7 - (i & 7))) & 1)) return false;
++    }
++    return true;
++}
++
++}  // namespace
++
++TEST_CASE("lutron: fields of a real frame") {
++    uint8_t body[frame_bytes];
++    Build build{0x02dd0abf, button_on, Action::Press, 0, 1};
++    REQUIRE(build_frame(build, body));
++    uint8_t bits[payload_bytes]{};
++    frame_to_bits(body, bits);
++    const Frame f = parse_frame(bits, frame_bits);
++    CHECK(f.valid);
++    CHECK(f.id == 0x02dd0abfULL);
++    CHECK(f.button == button_on);
++    CHECK(f.toggle == 1);
++    CHECK_FALSE(f.release);
++    CHECK(strcmp(button_name(f.button), "ON") == 0);
++}
++
++TEST_CASE("lutron: button names") {
++    CHECK(strcmp(button_name(button_on), "ON") == 0);
++    CHECK(strcmp(button_name(button_off), "OFF") == 0);
++    CHECK(strcmp(button_name(button_raise), "RAISE") == 0);
++    CHECK(strcmp(button_name(button_lower), "LOWER") == 0);
++    CHECK(strcmp(button_name(button_favorite), "FAVORITE") == 0);
++    CHECK(strcmp(button_name(0), "?") == 0);
++}
++
++TEST_CASE("lutron: bits are read big-endian from the start of the payload") {
++    const uint8_t bytes[] = {0xA5, 0x0F};
++    CHECK(get_bits(bytes, 0, 4) == 0xA);
++    CHECK(get_bits(bytes, 4, 8) == 0x50);
++    CHECK(get_bits(bytes, 12, 4) == 0xF);
++    CHECK(get_bits(bytes, 0, 16) == 0xA50F);
++}
++
++TEST_CASE("lutron: bursts of one press are grouped and voted, corrupted bursts are outvoted") {
++    PressVoter voter;
++    PressVoter::Press done{};
++    const Frame good{0x0577285FB4ULL, button_on, 1};
++    const Frame bad_id{0x0577285F94ULL, button_on, 1};
++    const Frame bad_button{0x0577285FB4ULL, button_off, 1};
++
++    for (int k = 0; k < 14; k++) {
++        const Frame& f = (k == 3) ? bad_id : (k == 9) ? bad_button
++                                                      : good;
++        CHECK_FALSE(voter.add(f, 1000 + 75 * k, done));  // a burst every 75 ms
++    }
++    CHECK(voter.active());
++    CHECK(voter.current().agree == 12);
++
++    CHECK_FALSE(voter.idle(1000 + 75 * 13 + 499, done));  // not quiet long enough yet
++    REQUIRE(voter.idle(1000 + 75 * 13 + 500, done));
++    CHECK(done.frame == good);
++    CHECK(done.agree == 12);
++    CHECK(done.total == 14);
++    CHECK(done.start_ms == 1000);
++    CHECK(done.duration_ms == 75 * 13);
++    CHECK_FALSE(voter.active());
++}
++
++TEST_CASE("lutron: a burst after a pause starts the next press and reports the previous one") {
++    PressVoter voter;
++    PressVoter::Press done{};
++    const Frame on{0x0577285FB4ULL, button_on, 1};
++    const Frame off{0x0577285FB4ULL, button_off, 0};
++
++    CHECK_FALSE(voter.add(on, 0, done));
++    CHECK_FALSE(voter.add(on, 75, done));
++    REQUIRE(voter.add(off, 2000, done));  // the gap closes the ON press
++    CHECK(done.frame == on);
++    CHECK(done.total == 2);
++    CHECK(voter.current().frame == off);
++    CHECK(voter.current().total == 1);
++}
++
++TEST_CASE("lutron: the toggle bit separates two presses of the same button") {
++    PressVoter voter;
++    PressVoter::Press done{};
++    const Frame t0{0x04EF405594ULL, button_raise, 0};
++    const Frame t1{0x04EF405594ULL, button_raise, 1};
++    voter.add(t0, 0, done);
++    REQUIRE(voter.add(t1, 600, done));
++    CHECK(done.frame.toggle == 0);
++    CHECK(voter.current().frame.toggle == 1);
++}
++
++TEST_CASE("lutron: demodulates a clean burst and measures its length") {
++    for (int kind = 0; kind < 2; kind++) {
++        const uint8_t* payload = kind ? real_on_244 : real_on_241;
++        const size_t bits = kind ? real_on_244_bits : real_on_241_bits;
++        Demod::Result r;
++        const auto iq = make_signal(payload_as_bits(payload, bits), 0, 37e3, 40, 2, false);
++        REQUIRE(run(iq, r) == 1);
++        CHECK_FALSE(r.long_frame);
++        CHECK(r.bits == bits);
++        CHECK(same_bits(r.bytes, payload, bits));
++    }
++}
++
++TEST_CASE("lutron: the length of a burst is recovered exactly") {
++    for (size_t bits : {110, 150, 200, 232, 239, 240, 241, 243, 244, 250}) {
++        for (double amplitude : {12.0, 40.0, 110.0}) {
++            Demod::Result r;
++            const auto iq = make_signal(payload_as_bits(real_on_244, bits), 0, 37e3, amplitude, amplitude / 8 + 1, false);
++            INFO("bits " << bits << " amplitude " << amplitude);
++            REQUIRE(run(iq, r) == 1);
++            CHECK_FALSE(r.long_frame);
++            CHECK(r.bits == bits);
++        }
++    }
++}
++
++TEST_CASE("lutron: a transmission that goes on past a Pico's frame is flagged (the bridge)") {
++    std::vector<int> bits = payload_as_bits(real_on_244, real_on_244_bits);
++    for (int i = 0; i < 400; i++) bits.push_back((i * 7 + (i >> 3)) & 1);  // a long frame
++    Demod::Result r;
++    const auto iq = make_signal(bits, 0, 37e3, 40, 2, false);
++    REQUIRE(run(iq, r) == 1);
++    CHECK(r.long_frame);
++    CHECK(r.bits == max_payload_bits);
++}
++
++TEST_CASE("lutron: demodulates with the I/Q spectrum mirrored") {
++    Demod::Result r;
++    const auto iq = make_signal(payload_as_bits(real_on_241, real_on_241_bits), 0, 37e3, 40, 2, true);
++    REQUIRE(run(iq, r) == 1);
++    CHECK(r.bits == real_on_241_bits);
++    CHECK(same_bits(r.bytes, real_on_241, real_on_241_bits));
++}
++
++TEST_CASE("lutron: demodulates carriers 40 kHz off the tuned frequency") {
++    for (double offset : {-35e3, -10e3, 10e3, 40e3}) {
++        Demod::Result r;
++        const auto iq = make_signal(payload_as_bits(real_on_241, real_on_241_bits), offset, 37e3, 40, 2, false);
++        INFO("offset " << offset);
++        REQUIRE(run(iq, r) == 1);
++        CHECK(r.bits == real_on_241_bits);
++        CHECK(same_bits(r.bytes, real_on_241, real_on_241_bits));
++    }
++}
++
++TEST_CASE("lutron: demodulates a weak burst in noise") {
++    Demod::Result r;
++    const auto iq = make_signal(payload_as_bits(real_on_241, real_on_241_bits), 20e3, 37e3, 12, 6, false);
++    REQUIRE(run(iq, r) == 1);
++    CHECK(r.bits == real_on_241_bits);
++    CHECK(same_bits(r.bytes, real_on_241, real_on_241_bits));
++}
++
++TEST_CASE("lutron: noise alone is not a frame") {
++    Demod::Result r;
++    const std::vector<int> nothing;
++    const auto iq = make_signal(nothing, 0, 37e3, 0, 20, false);
++    CHECK(run(iq, r) == 0);
++}
++
++TEST_CASE("lutron: a sync word without the preamble in front of it is ignored") {
++    Demod::Result r;
++    std::vector<int> bits;
++    for (int i = 0; i < 90; i++) bits.push_back(1);  // no alternation: not a Lutron preamble
++    for (int i = sync_bits - 1; i >= 0; i--) bits.push_back((sync_word >> i) & 1);
++    for (size_t i = 0; i < 240; i++) bits.push_back(i & 1);
++    const auto iq = make_signal(bits, 0, 37e3, 40, 2, false);
++    CHECK(run(iq, r) == 0);
++}
++
++TEST_CASE("lutron: aliases are read from lines, later lines win") {
++    AliasTable t;
++    const char* l1 = "0577285FB4 Kitchen Pico";
++    const char* l2 = "04ef405594,Basement\r";
++    const char* l3 = "0577285FB4=Kitchen Dim";
++    CHECK(t.add_line(l1, strlen(l1)));
++    CHECK(t.add_line(l2, strlen(l2)));
++    CHECK(strcmp(t.find(0x0577285FB4ULL), "Kitchen Pico") == 0);
++    CHECK(strcmp(t.find(0x04EF405594ULL), "Basement") == 0);
++    CHECK(t.add_line(l3, strlen(l3)));
++    CHECK(strcmp(t.find(0x0577285FB4ULL), "Kitchen Dim") == 0);
++    CHECK(t.size() == 2);
++    CHECK(t.find(0x1234ULL) == nullptr);
++}
++
++TEST_CASE("lutron: alias lines that are not a device and a name are rejected") {
++    AliasTable t;
++    CHECK_FALSE(t.add_line("", 0));
++    CHECK_FALSE(t.add_line("# comment", 9));
++    CHECK_FALSE(t.add_line("0577285FB4", 10));       // no name
++    CHECK_FALSE(t.add_line("0577285FB4   ", 13));    // only blanks after the id
++    CHECK_FALSE(t.add_line("zz name", 7));           // not hex
++    CHECK(t.size() == 0);
++}
++
++TEST_CASE("lutron: release is a separate press from the button that was held") {
++    PressVoter voter;
++    PressVoter::Press done{};
++    const Frame press{0x02dd0abfULL, button_on, 1, false};
++    const Frame release{0x02dd0abfULL, button_on, 1, true};
++    CHECK_FALSE(voter.add(press, 0, done));
++    REQUIRE(voter.add(release, 80, done));
++    CHECK_FALSE(done.frame.release);
++    CHECK(voter.current().frame.release);
++}
++
++static bool load_body(uint8_t* body, const char* hex) {
++    for (size_t i = 0; i < frame_bytes; i++) {
++        auto nibble = [](char c) -> int {
++            if (c >= '0' && c <= '9') return c - '0';
++            if (c >= 'a' && c <= 'f') return c - 'a' + 10;
++            return -1;
++        };
++        const int hi = nibble(hex[i * 2]);
++        const int lo = nibble(hex[i * 2 + 1]);
++        if (hi < 0 || lo < 0) return false;
++        body[i] = static_cast<uint8_t>((hi << 4) | lo);
++    }
++    return true;
++}
++
++static bool same_body(const uint8_t* body, const char* hex) {
++    uint8_t expect[frame_bytes];
++    return load_body(expect, hex) && std::memcmp(body, expect, frame_bytes) == 0;
++}
++
++TEST_CASE("lutron: built frames match captured and published packets") {
++    struct Sample {
++        uint32_t serial;
++        uint8_t button;
++        Action action;
++        uint8_t seq;
++        uint8_t toggle;
++        const char* hex;
++    };
++    const Sample samples[] = {
++        {0x02dd0abf, button_on, Action::Press, 0, 1, "8a0002dd0abf210403000200ccccccccccccccccccccadcf"},
++        {0x02dd0abf, button_on, Action::Press, 6, 1, "8a0602dd0abf210403000200cccccccccccccccccccc7d46"},
++        {0x02dd0abf, button_on, Action::Release, 0x0c, 0, "890c02dd0abf210e0300020102dd0abf004000200000149a"},
++        {0x02a24c77, button_on, Action::Press, 0, 0, "880002a24c77210403000200cccccccccccccccccccc6141"},
++        {0x02a24c77, button_on, Action::Release, 0, 0, "890002a24c77210e0300020102a24c77004000200000436b"},
++        {0x02a24c77, button_off, Action::Press, 0, 0, "880002a24c77210403000400cccccccccccccccccccc2c50"},
++        {0x02a24c77, button_favorite, Action::Press, 0, 1, "8a0002a24c77210403000300cccccccccccccccccccc60c3"},
++        {0x02a24c77, button_raise, Action::Press, 0, 1, "8a0002a24c77210c0300050002a24c7700420003cccca2a7"},
++        {0x02a24c77, button_lower, Action::Press, 0, 0, "880002a24c77210c0300060002a24c7700420002cccc5225"},
++        {0x02a24c77, button_raise, Action::Release, 0, 1, "8b0002a24c77210e0300050102a24c77004202010133ea38"},
++        {0x02a24c77, button_lower, Action::Release, 0, 0, "890002a24c77210e0300060102a24c770042020001331aba"},
++    };
++    for (const auto& sample : samples) {
++        uint8_t body[frame_bytes];
++        Build build{sample.serial, sample.button, sample.action, sample.seq, sample.toggle};
++        INFO(sample.hex);
++        REQUIRE(build_frame(build, body));
++        CHECK(same_body(body, sample.hex));
++    }
++    uint8_t unused[frame_bytes];
++    CHECK_FALSE(build_frame(Build{0, button_on, Action::Press, 0, 0}, unused));
++    CHECK_FALSE(build_frame(Build{0x02dd0abf, 9, Action::Press, 0, 0}, unused));
++}
++
++TEST_CASE("lutron: set-level uses the subnet it is given") {
++    const Subnet net{0x91, 0x6F, 0x00, true};
++    uint8_t body[frame_bytes];
++    REQUIRE(build_level(LevelBuild{0x033ca7a6, 0x83, 0x01, false, 0, net}, body));
++    CHECK(same_body(body, "8301a1916f00210e00033ca7a6fe4002000000010000271d"));
++    REQUIRE(build_level(LevelBuild{0x033ca7a6, 0x83, 0x82, true, 0, net}, body));
++    CHECK(same_body(body, "8382a3916f00210e00033ca7a6fe4002000000010000626c"));
++    REQUIRE(build_level(LevelBuild{0x033ca7a6, 0x81, 0x01, false, 100, net}, body));
++    CHECK(same_body(body, "8101a1916f00210e00033ca7a6fe4002feff00010000be62"));
++    Subnet learned{};
++    REQUIRE(bridge_subnet(body, learned));
++    CHECK(learned.b0 == 0x91);
++    CHECK(learned.b1 == 0x6F);
++    CHECK(learned.b2 == 0x00);
++    uint8_t beacon[frame_bytes];
++    REQUIRE(load_body(beacon, "9343a3916f00210c00ffffffffff0802916f1a02cccc5b47"));
++    REQUIRE(bridge_subnet(beacon, learned));
++    CHECK(subnet_word(learned) == 0x916F00);
++    body[23] ^= 0xFF;
++    CHECK_FALSE(bridge_subnet(body, learned));
++    Subnet parsed{};
++    REQUIRE(parse_subnet_line("916F00", 6, parsed));
++    CHECK(subnet_word(parsed) == 0x916F00);
++    CHECK_FALSE(parse_subnet_line("916F", 4, parsed));
++    CHECK(level_word(0) == 0);
++    CHECK(level_word(100) == level_full);
++    CHECK(level_word(46) == 0x754C);
++    CHECK_FALSE(build_level(LevelBuild{0, 0x81, 0x01, false, 0, net}, body));
++    CHECK_FALSE(build_level(LevelBuild{0x033ca7a6, 0x80, 0x01, false, 0, net}, body));
++    CHECK_FALSE(build_level(LevelBuild{0x033ca7a6, 0x81, 0x01, false, 101, net}, body));
++    CHECK_FALSE(build_level(LevelBuild{0x033ca7a6, 0x81, 0x01, false, 0, {}}, body));
++    uint8_t pico[frame_bytes];
++    REQUIRE(build_frame(Build{0x02dd0abf, button_on, Action::Press, 0, 1}, pico));
++    CHECK_FALSE(bridge_subnet(pico, learned));
++}
++
++TEST_CASE("lutron: a built burst is the python air format, then 75 ms of silence") {
++    uint8_t body[frame_bytes];
++    REQUIRE(build_frame(Build{0x02dd0abf, button_on, Action::Press, 0, 1}, body));
++    const char* air =
++        "10101010101010101010101010101010101010101010101010101010101010101010101010101010"
++        "011111111100101111110011110111"
++        "001010001100000000010010000001010111011100101000010111111011010000100100010000010110000001000000000100100000010000000001000110011100011001110001100111000110011100011001110001100111000110011100011001110001100111000110011101011010110111100111";
++    Mod mod;
++    mod.start(body, 1);
++    REQUIRE(std::strlen(air) == Mod::burst_bits);
++    for (uint32_t s = 0; s < Mod::burst_samples; s++) {
++        const int8_t tone = mod.next();
++        if ((s % Mod::sps) != 0) continue;
++        const uint32_t bit = s / Mod::sps;
++        INFO("bit " << bit);
++        CHECK(tone == (air[bit] == '1' ? 1 : -1));
++    }
++    CHECK(mod.next() == 0);
++    CHECK(mod.running());
++    for (uint32_t s = Mod::burst_samples + 1; s < Mod::slot_samples - 1; s++) CHECK(mod.next() == 0);
++    CHECK(mod.next() == 0);
++    CHECK_FALSE(mod.running());
++}
++
++TEST_CASE("lutron: the second slot sends the second frame") {
++    uint8_t frames[2][frame_bytes];
++    REQUIRE(build_frame(Build{0x02a24c77, button_off, Action::Press, 0, 0}, frames[0]));
++    REQUIRE(build_frame(Build{0x02a24c77, button_off, Action::Press, 6, 0}, frames[1]));
++    uint8_t second[payload_bytes]{};
++    frame_to_bits(frames[1], second);
++    Mod mod;
++    mod.start(&frames[0][0], 2);
++    for (uint32_t s = 0; s < Mod::slot_samples; s++) mod.next();
++    CHECK(mod.running());
++    CHECK(mod.frame_index() == 1);
++    const uint32_t lead = (Mod::preamble_bits + Mod::prefix_bits) * Mod::sps;
++    for (uint32_t s = 0; s < lead; s++) mod.next();
++    for (uint32_t bit = 0; bit < frame_bits; bit++) {
++        for (int k = 0; k < Mod::sps; k++) {
++            const int8_t tone = mod.next();
++            if (k != 0) continue;
++            const bool want = ((second[bit >> 3] >> (7 - (bit & 7))) & 1) != 0;
++            INFO("body bit " << bit);
++            CHECK((tone > 0) == want);
++        }
++    }
++}
++
++TEST_CASE("lutron: recorded ids are eight hex digits, aliases and toggles keep the latest line") {
++    IdTable ids;
++    const char* device = "02DD0ABF\n";
++    CHECK(ids.add_line(device, strlen(device)));
++    CHECK(ids.add_line("02dd0abf again", 14));
++    CHECK(ids.size() == 1);
++    CHECK(ids.at(0) == 0x02dd0abf);
++    CHECK_FALSE(ids.add_line("02DD0ABF0 extra", 15));  // nine digits
++    CHECK_FALSE(ids.add_line("02DD0AB", 7));
++    uint32_t parsed = 0;
++    CHECK(parse_id("02EE0135", 8, parsed));
++    CHECK(parsed == 0x02ee0135);
++    CHECK_FALSE(parse_id("00000000", 8, parsed));
++    CHECK(ids.add(parsed));
++    CHECK_FALSE(ids.add(parsed));
++
++    ToggleTable toggles;
++    const char* first = "02DD0ABF 0\n";
++    const char* second = "02DD0ABF 1";
++    CHECK(toggles.add_line(first, strlen(first)));
++    CHECK(toggles.get(0x02dd0abf) == 0);
++    CHECK(toggles.add_line(second, strlen(second)));
++    CHECK(toggles.get(0x02dd0abf) == 1);
++    CHECK(toggles.get(0x11111111) == 0);
++}
++
++TEST_CASE("lutron: names are cut to fit and the table has a limit") {
++    AliasTable t;
++    const char* l = "01 This name is far too long";
++    CHECK(t.add_line(l, strlen(l)));
++    CHECK(strlen(t.find(1)) == AliasTable::name_len);
++    for (uint64_t id = 2; id <= AliasTable::max_entries; id++) CHECK(t.set(id, "x"));
++    CHECK_FALSE(t.set(0x999, "one too many"));
++    CHECK(t.set(5, "renamed"));  // an existing id can always be renamed
++}
+diff --git a/firmware/tools/external_app_info.py b/firmware/tools/external_app_info.py
+index 41f7e99..d8b31ab 100644
+--- a/firmware/tools/external_app_info.py
++++ b/firmware/tools/external_app_info.py
+@@ -24,4 +24,4 @@
+ # external app address ranges below must match those in linker file "external.ld"
+ maximum_application_size = 32*1024
+ external_apps_address_start = 0xADB00000
+-external_apps_address_end = 0xAE020000
++external_apps_address_end = 0xAE060000
+diff --git a/firmware/application/external/lutron_tx/main.cpp b/firmware/application/external/lutron_tx/main.cpp
+new file mode 100644
+index 0000000..92a668f
+--- /dev/null
++++ b/firmware/application/external/lutron_tx/main.cpp
+@@ -0,0 +1,51 @@
++/*
++ * Copyright (C) 2026 Dave Hammer
++ *
++ * This file is part of PortaPack.
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; either version 3, or (at your option)
++ * any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program; see the file COPYING.  If not, write to
++ * the Free Software Foundation, Inc., 51 Franklin Street,
++ * Boston, MA 02110-1301, USA.
++ */
++
++#include "ui.hpp"
++#include "ui_lutron_tx.hpp"
++#include "ui_navigation.hpp"
++#include "external_app.hpp"
++
++namespace ui::external_app::lutron_tx {
++void initialize_app(ui::NavigationView& nav) {
++    nav.push<LutronTxView>();
++}
++}  // namespace ui::external_app::lutron_tx
++
++extern "C" {
++
++__attribute__((section(".external_app.app_lutron_tx.application_information"), used)) application_information_t _application_information_lutron_tx = {
++    /*.memory_location = */ (uint8_t*)0x00000000,
++    /*.externalAppEntry = */ ui::external_app::lutron_tx::initialize_app,
++    /*.header_version = */ CURRENT_HEADER_VERSION,
++    /*.app_version = */ VERSION_MD5,
++
++    /*.app_name = */ "Lutron TX",
++    /*.bitmap_data = */ {// a remote: outline with a column of buttons
++                         0xF0, 0x0F, 0x10, 0x08, 0xD0, 0x0B, 0x10, 0x08, 0xD0, 0x0B, 0x10, 0x08, 0xD0, 0x0B, 0x10, 0x08, 0xD0, 0x0B, 0x10, 0x08, 0xD0, 0x0B, 0x10, 0x08, 0xD0, 0x0B, 0x10, 0x08, 0xF0, 0x0F, 0x00, 0x00},
++    /*.icon_color = */ ui::Color::yellow().v,
++    /*.menu_location = */ app_location_t::TX,
++    /*.desired_menu_position = */ -1,
++
++    /*.m4_app_tag = portapack::spi_flash::image_tag_lutron_tx */ {'P', 'L', 'U', 'X'},
++    /*.m4_app_offset = */ 0x00000000,  // will be filled at compile time
++};
++}
+diff --git a/firmware/application/external/lutron_tx/ui_lutron_tx.cpp b/firmware/application/external/lutron_tx/ui_lutron_tx.cpp
+new file mode 100644
+index 0000000..8af710e
+--- /dev/null
++++ b/firmware/application/external/lutron_tx/ui_lutron_tx.cpp
+@@ -0,0 +1,307 @@
++/*
++ * Copyright (C) 2026 Dave Hammer
++ *
++ * This file is part of PortaPack.
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; either version 3, or (at your option)
++ * any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program; see the file COPYING.  If not, write to
++ * the Free Software Foundation, Inc., 51 Franklin Street,
++ * Boston, MA 02110-1301, USA.
++ */
++
++#include "ui_lutron_tx.hpp"
++
++#include "baseband_api.hpp"
++#include "lutron_store.hpp"
++#include "portapack_shared_memory.hpp"
++#include "string_format.hpp"
++#include "ui_textentry.hpp"
++
++#include <cstring>
++
++using namespace portapack;
++
++namespace ui::external_app::lutron_tx {
++
++LutronTxView::LutronTxView(NavigationView& nav)
++    : nav_{nav} {
++    baseband::run_prepared_image(portapack::memory::map::m4_code.base());
++    /* The modulator is 62.5 kbaud at 1 MHz. Keep that rate. Start quiet. */
++    transmitter_model.set_sampling_rate(1000000);
++    transmitter_model.set_baseband_bandwidth(500000);
++    transmitter_model.set_tx_gain(0);
++    transmitter_model.set_rf_amp(false);
++
++    add_children({&text_device,
++                  &button_prev,
++                  &button_next,
++                  &button_serial,
++                  &button_name,
++                  &text_target,
++                  &options_target,
++                  &text_level,
++                  &field_level,
++                  &text_button,
++                  &options_button,
++                  &text_repeats,
++                  &field_repeats,
++                  &text_action,
++                  &options_action,
++                  &text_status,
++                  &text_hint,
++                  &tx_view});
++
++    field_repeats.set_value(lutron::tx_repeat_default, false);
++    field_level.set_value(100, false);
++    load_files();
++
++    button_prev.on_select = [this](Button&) { on_prev(); };
++    button_next.on_select = [this](Button&) { on_next(); };
++    button_serial.on_select = [this](Button&) { on_serial(); };
++    button_name.on_select = [this](Button&) { on_name(); };
++    options_button.on_change = [this](size_t, OptionsField::value_t) { disarm(); };
++    options_action.on_change = [this](size_t, OptionsField::value_t) { disarm(); };
++    options_target.on_change = [this](size_t, OptionsField::value_t value) {
++        disarm();
++        if (value == 1) {
++            const std::string net = subnet_.known ? to_string_hex(lutron::subnet_word(subnet_), 6) : "no subnet yet";
++            show_status("level " + to_string_dec_uint(field_level.value()) + "% " + net);
++        }
++    };
++    field_level.on_change = [this](int32_t value) {
++        disarm();
++        if (dimmer_selected()) show_status(to_string_dec_uint(value) + "%");
++    };
++    field_repeats.on_change = [this](int32_t) { disarm(); };
++    tx_view.on_start = [this]() { on_start(); };
++    tx_view.on_stop = [this]() { on_stop(); };
++}
++
++void LutronTxView::focus() {
++    button_next.focus();
++}
++
++void LutronTxView::load_files() {
++    lutron_store::load_ids(ids_, aliases_);
++    lutron_store::load_toggles(toggles_);
++    lutron_store::load_subnet(subnet_);
++    if (ids_.size() != 0) selected_ = 0;
++    show_device();
++}
++
++void LutronTxView::show_status(const std::string& text) {
++    text_status.set(text);
++}
++
++void LutronTxView::disarm() {
++    if (!armed_ || sending_) return;
++    armed_ = false;
++    show_status("");
++}
++
++bool LutronTxView::dimmer_selected() const {
++    return options_target.selected_index_value() == 1;
++}
++
++bool LutronTxView::current_id(uint32_t& id) const {
++    if (selected_ < 0 || ids_.size() == 0) return false;
++    id = ids_.at(static_cast<size_t>(selected_));
++    return true;
++}
++
++void LutronTxView::show_device() {
++    uint32_t id = 0;
++    if (!current_id(id)) {
++        text_device.set("no serial yet");
++        return;
++    }
++    const char* name = aliases_.find(id);
++    text_device.set(to_string_hex(id, 8) + ' ' + (name ? name : "unnamed"));
++}
++
++void LutronTxView::select_id(uint32_t id) {
++    const int index = ids_.index_of(id);
++    if (index >= 0) selected_ = index;
++    show_device();
++}
++
++void LutronTxView::on_prev() {
++    if (ids_.size() == 0 || sending_) return;
++    selected_ = static_cast<int>((static_cast<size_t>(selected_) + ids_.size() - 1) % ids_.size());
++    disarm();
++    show_device();
++}
++
++void LutronTxView::on_next() {
++    if (ids_.size() == 0 || sending_) return;
++    selected_ = static_cast<int>((static_cast<size_t>(selected_) + 1) % ids_.size());
++    disarm();
++    show_device();
++}
++
++void LutronTxView::on_serial() {
++    if (sending_) return;
++    uint32_t id = 0;
++    serial_buffer_ = current_id(id) ? to_string_hex(id, 8) : "00000000";
++    text_prompt(
++        nav_,
++        serial_buffer_,
++        8,
++        ENTER_KEYBOARD_MODE_HEX,
++        [this](std::string& text) {
++            uint32_t parsed = 0;
++            if (!lutron::parse_id(text.data(), text.size(), parsed)) {
++                show_status("serial is 8 hex digits");
++                return;
++            }
++            if (!lutron_store::remember_id(ids_, parsed)) {
++                show_status(ids_.contains(parsed) ? "cannot write devices.txt" : "ID list full");
++                if (!ids_.contains(parsed)) return;
++            }
++            disarm();
++            select_id(parsed);
++            show_status("serial " + to_string_hex(parsed, 8));
++        });
++}
++
++void LutronTxView::on_name() {
++    if (sending_) return;
++    uint32_t id = 0;
++    if (!current_id(id)) {
++        show_status("pick or enter a serial");
++        return;
++    }
++    const char* current = aliases_.find(id);
++    name_buffer_ = current ? current : "";
++    text_prompt(
++        nav_,
++        name_buffer_,
++        lutron::AliasTable::name_len,
++        ENTER_KEYBOARD_MODE_ALPHA,
++        [this, id](std::string& name) {
++            if (name.empty()) return;
++            if (!lutron_store::remember_alias(aliases_, id, name)) {
++                show_status("cannot write aliases.txt");
++                return;
++            }
++            show_device();
++            show_status("named " + to_string_hex(id, 8));
++        });
++}
++
++void LutronTxView::on_start() {
++    if (sending_) return;
++    if (!armed_) {
++        uint32_t id = 0;
++        if (!current_id(id)) {
++            show_status("pick or enter a serial");
++            return;
++        }
++        armed_ = true;
++        const char* name = aliases_.find(id);
++        std::string again = std::string("again: ") + (name ? name : to_string_hex(id, 8));
++        if (dimmer_selected()) {
++            again += " " + to_string_dec_uint(field_level.value()) + "%";
++            again += subnet_.known ? " " + to_string_hex(lutron::subnet_word(subnet_), 6) : " no subnet";
++        }
++        show_status(again);
++        return;
++    }
++    armed_ = false;
++    start_tx();
++}
++
++void LutronTxView::on_stop() {
++    baseband::set_lutron_tx(0);
++    transmitter_model.disable();
++    sending_ = false;
++    armed_ = false;
++    tx_view.set_transmitting(false);
++    show_status("stopped");
++}
++
++void LutronTxView::on_done(bool done) {
++    if (!done) return;
++    transmitter_model.disable();
++    sending_ = false;
++    tx_view.set_transmitting(false);
++    show_status("sent");
++}
++
++bool LutronTxView::start_tx() {
++    uint32_t id = 0;
++    if (!current_id(id)) {
++        show_status("pick or enter a serial");
++        return false;
++    }
++    int32_t repeats = field_repeats.value();
++    if (repeats < 1) repeats = 1;
++    if (repeats > lutron::tx_repeat_cap) repeats = lutron::tx_repeat_cap;
++
++    uint8_t frames[lutron::tx_repeat_cap][lutron::frame_bytes];
++    std::string sending = "sending " + to_string_dec_uint(repeats);
++    if (dimmer_selected()) {
++        if (!subnet_.known) {
++            show_status("hear the bridge in Lutron RX first");
++            return false;
++        }
++        /* Slot 0 is the one-shot. The rest are the repeat train, 75 ms apart. */
++        const uint8_t type = level_type_;
++        const auto percent = static_cast<uint8_t>(field_level.value());
++        for (int32_t i = 0; i < repeats; i++) {
++            lutron::LevelBuild level{};
++            level.target = id;
++            level.type = type;
++            level.percent = percent;
++            level.subnet = subnet_;
++            level.train = i > 0;
++            level.seq = i == 0 ? 0x01 : static_cast<uint8_t>((0x82 + 6 * (i - 1)) & 0xFF);
++            if (!lutron::build_level(level, frames[i])) {
++                show_status("cannot build that level");
++                return false;
++            }
++        }
++        level_type_ = static_cast<uint8_t>(0x81 + ((type - 0x81 + 1) % 3));
++        sending = "sending " + to_string_dec_uint(percent) + "%";
++    } else {
++        lutron::Build build{};
++        build.serial = id;
++        build.button = static_cast<uint8_t>(options_button.selected_index_value());
++        const bool press = options_action.selected_index_value() == 0;
++        build.action = press ? lutron::Action::Press : lutron::Action::Release;
++        /* toggles.txt holds the next press. A release uses the bit that press used, and does not advance it. */
++        const uint8_t next_toggle = toggles_.get(id);
++        build.toggle = press ? next_toggle : static_cast<uint8_t>(next_toggle ^ 1);
++
++        for (int32_t i = 0; i < repeats; i++) {
++            build.seq = static_cast<uint8_t>((6 * i) & 0xFF);
++            if (!lutron::build_frame(build, frames[i])) {
++                show_status("cannot build that button");
++                return false;
++            }
++        }
++        /* Advance before the radio comes on, so a press cut short still uses a new toggle next time. */
++        if (press) lutron_store::remember_toggle(toggles_, id, static_cast<uint8_t>(next_toggle ^ 1));
++    }
++    memcpy(shared_memory.bb_data.data, frames, static_cast<size_t>(repeats) * lutron::frame_bytes);
++
++    transmitter_model.set_sampling_rate(1000000);
++    transmitter_model.enable();
++    baseband::set_lutron_tx(static_cast<uint8_t>(repeats));
++    sending_ = true;
++    tx_view.set_transmitting(true);
++    show_status(sending);
++    return true;
++}
++
++}  // namespace ui::external_app::lutron_tx
+diff --git a/firmware/application/external/lutron_tx/ui_lutron_tx.hpp b/firmware/application/external/lutron_tx/ui_lutron_tx.hpp
+new file mode 100644
+index 0000000..d8977d1
+--- /dev/null
++++ b/firmware/application/external/lutron_tx/ui_lutron_tx.hpp
+@@ -0,0 +1,168 @@
++/*
++ * Copyright (C) 2026 Dave Hammer
++ *
++ * This file is part of PortaPack.
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; either version 3, or (at your option)
++ * any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program; see the file COPYING.  If not, write to
++ * the Free Software Foundation, Inc., 51 Franklin Street,
++ * Boston, MA 02110-1301, USA.
++ */
++
++#ifndef __UI_LUTRON_TX_H__
++#define __UI_LUTRON_TX_H__
++
++#include "ui.hpp"
++#include "ui_navigation.hpp"
++#include "ui_transmitter.hpp"
++#include "app_settings.hpp"
++#include "radio_state.hpp"
++#include "message.hpp"
++#include "lutron_pico.hpp"
++
++#include <string>
++
++namespace ui::external_app::lutron_tx {
++
++/* Sends one Pico press or release, or a dimmer set-level.
++ * Prev/Next walk LUTRON/devices.txt and LUTRON/aliases.txt (the list Lutron RX records).
++ * Serial types an id. Name stores an alias for the id on screen. START asks once, then sends.
++ * PICO sends the button. DIM sends Lvl (0-100) to that serial.
++ * The set-level header comes from LUTRON/subnet.txt, which Lutron RX writes.
++ * Gain comes up at 0 and the RF amp off. Sample rate stays 1 MHz: the modulator is 16 samples per symbol. */
++class LutronTxView : public View {
++   public:
++    LutronTxView(NavigationView& nav);
++
++    void focus() override;
++
++    std::string title() const override { return "Lutron TX"; };
++
++   private:
++    void load_files();
++    void show_device();
++    void show_status(const std::string& text);
++    void disarm();
++    bool dimmer_selected() const;
++    bool current_id(uint32_t& id) const;
++    void select_id(uint32_t id);
++    void on_prev();
++    void on_next();
++    void on_serial();
++    void on_name();
++    void on_start();
++    void on_stop();
++    void on_done(bool done);
++    bool start_tx();
++
++    NavigationView& nav_;
++    TxRadioState radio_state_{
++        433592000,
++        500000,
++        1000000};
++    app_settings::SettingsManager settings_{
++        "tx_lutron", app_settings::Mode::TX};
++
++    lutron::IdTable ids_{};
++    lutron::AliasTable aliases_{};
++    lutron::ToggleTable toggles_{};
++    lutron::Subnet subnet_{};
++    int selected_{-1};
++    bool armed_{false};
++    bool sending_{false};
++    uint8_t level_type_{0x81};
++    std::string serial_buffer_{};
++    std::string name_buffer_{};
++
++    Text text_device{
++        {UI_POS_X(0), UI_POS_Y(0), UI_POS_MAXWIDTH, UI_POS_HEIGHT(1)},
++        "no serial yet"};
++    Button button_prev{
++        {UI_POS_X(0), UI_POS_Y(1), UI_POS_WIDTH(7), UI_POS_HEIGHT(2)},
++        "Prev"};
++    Button button_next{
++        {UI_POS_X(8), UI_POS_Y(1), UI_POS_WIDTH(7), UI_POS_HEIGHT(2)},
++        "Next"};
++    Button button_serial{
++        {UI_POS_X(16), UI_POS_Y(1), UI_POS_WIDTH(7), UI_POS_HEIGHT(2)},
++        "Serial"};
++    Button button_name{
++        {UI_POS_X(24), UI_POS_Y(1), UI_POS_WIDTH(6), UI_POS_HEIGHT(2)},
++        "Name"};
++    Text text_target{
++        {UI_POS_X(0), UI_POS_Y(3), UI_POS_WIDTH(3), UI_POS_HEIGHT(1)},
++        "To"};
++    OptionsField options_target{
++        {UI_POS_X(3), UI_POS_Y(3)},
++        4,
++        {{"PICO", 0},
++         {"DIM", 1}}};
++    Text text_level{
++        {UI_POS_X(12), UI_POS_Y(3), UI_POS_WIDTH(4), UI_POS_HEIGHT(1)},
++        "Lvl"};
++    NumberField field_level{
++        {UI_POS_X(16), UI_POS_Y(3)},
++        3,
++        {0, 100},
++        1,
++        ' '};
++    Text text_button{
++        {UI_POS_X(0), UI_POS_Y(4), UI_POS_WIDTH(4), UI_POS_HEIGHT(1)},
++        "Btn"};
++    OptionsField options_button{
++        {UI_POS_X(4), UI_POS_Y(4)},
++        8,
++        {{"ON", lutron::button_on},
++         {"OFF", lutron::button_off},
++         {"RAISE", lutron::button_raise},
++         {"LOWER", lutron::button_lower},
++         {"FAVORITE", lutron::button_favorite}}};
++    Text text_action{
++        {UI_POS_X(14), UI_POS_Y(5), UI_POS_WIDTH(4), UI_POS_HEIGHT(1)},
++        "Act"};
++    OptionsField options_action{
++        {UI_POS_X(18), UI_POS_Y(5)},
++        8,
++        {{"PRESS", 0},
++         {"RELEASE", 1}}};
++    Text text_repeats{
++        {UI_POS_X(0), UI_POS_Y(5), UI_POS_WIDTH(4), UI_POS_HEIGHT(1)},
++        "Rep"};
++    NumberField field_repeats{
++        {UI_POS_X(4), UI_POS_Y(5)},
++        2,
++        {1, lutron::tx_repeat_cap},
++        1,
++        ' '};
++    Text text_status{
++        {UI_POS_X(0), UI_POS_Y(7), UI_POS_MAXWIDTH, UI_POS_HEIGHT(1)},
++        ""};
++    Text text_hint{
++        {UI_POS_X(0), UI_POS_Y(8), UI_POS_MAXWIDTH, UI_POS_HEIGHT(2)},
++        "DIM uses Lvl. START twice."};
++
++    TransmitterView tx_view{
++        (int16_t)UI_POS_Y_BOTTOM(4),
++        10000,
++        150};
++
++    MessageHandlerRegistration message_handler_tx_progress{
++        Message::ID::TXProgress,
++        [this](Message* const p) {
++            this->on_done(static_cast<const TXProgressMessage*>(p)->done);
++        }};
++};
++
++}  // namespace ui::external_app::lutron_tx
++
++#endif /*__UI_LUTRON_TX_H__*/
+diff --git a/firmware/application/lutron_store.hpp b/firmware/application/lutron_store.hpp
+new file mode 100644
+index 0000000..caf373e
+--- /dev/null
++++ b/firmware/application/lutron_store.hpp
+@@ -0,0 +1,127 @@
++/*
++ * Copyright (C) 2026 Dave Hammer
++ *
++ * This file is part of PortaPack.
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; either version 3, or (at your option)
++ * any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program; see the file COPYING.  If not, write to
++ * the Free Software Foundation, Inc., 51 Franklin Street,
++ * Boston, MA 02110-1301, USA.
++ */
++
++/*
++ * SD card files shared by Lutron RX and Lutron TX. Header only.
++ *
++ *   LUTRON/devices.txt  one serial per line, "02DD0ABF", recorded by RX or typed on TX
++ *   LUTRON/aliases.txt  "02DD0ABF Kitchen", later lines for the same serial win
++ *   LUTRON/toggles.txt  "02DD0ABF 1", the toggle bit the next press of that serial will use
++ *   LUTRON/subnet.txt   "AABBCC", bytes 3-5 of a bridge frame, learned by RX
++ */
++
++#ifndef __LUTRON_STORE_H__
++#define __LUTRON_STORE_H__
++
++#include "file.hpp"
++#include "file_reader.hpp"
++#include "log_file.hpp"
++#include "lutron_pico.hpp"
++#include "string_format.hpp"
++
++#include <string>
++
++namespace lutron_store {
++
++/* Returned by value. A function-local static path emits a global constructor.
++ * That constructor is linked into the external app at 0xAExxxxxx while its
++ * .init_array pointer stays in the M0 boot table and hard-faults before the LCD. */
++inline std::filesystem::path devices_path() {
++    return std::filesystem::path{u"LUTRON/devices.txt"};
++}
++
++inline std::filesystem::path aliases_path() {
++    return std::filesystem::path{u"LUTRON/aliases.txt"};
++}
++
++inline std::filesystem::path toggles_path() {
++    return std::filesystem::path{u"LUTRON/toggles.txt"};
++}
++
++inline std::filesystem::path subnet_path() {
++    return std::filesystem::path{u"LUTRON/subnet.txt"};
++}
++
++template <typename Fn>
++inline void for_each_line(const std::filesystem::path& path, Fn&& fn) {
++    File file;
++    if (file.open(path)) return;
++    auto reader = FileLineReader(file);
++    for (const auto& line : reader) fn(line.data(), line.size());
++}
++
++inline bool append_line(const std::filesystem::path& path, const std::string& line) {
++    LogFile file;
++    if (file.append(path)) return false;
++    return !file.write_raw(line);
++}
++
++/* Loads devices, then any serial that already has an alias. */
++inline void load_ids(lutron::IdTable& ids, lutron::AliasTable& aliases) {
++    for_each_line(devices_path(), [&](const char* line, size_t n) { ids.add_line(line, n); });
++    for_each_line(aliases_path(), [&](const char* line, size_t n) { aliases.add_line(line, n); });
++    for (size_t i = 0; i < aliases.size(); i++) {
++        const uint64_t id = aliases.id_at(i);
++        if (id <= 0xFFFFFFFFULL) ids.add(static_cast<uint32_t>(id));
++    }
++}
++
++inline void load_toggles(lutron::ToggleTable& toggles) {
++    for_each_line(toggles_path(), [&](const char* line, size_t n) { toggles.add_line(line, n); });
++}
++
++/* Writes the serial once. False if the table is full or the card could not be written. */
++inline bool remember_id(lutron::IdTable& ids, uint32_t id) {
++    if (id == 0 || ids.contains(id)) return true;
++    if (!ids.add(id)) return false;
++    return append_line(devices_path(), to_string_hex(id, 8));
++}
++
++inline bool remember_alias(lutron::AliasTable& aliases, uint32_t id, const std::string& name) {
++    if (name.empty() || !aliases.set(id, name.c_str())) return false;
++    return append_line(aliases_path(), to_string_hex(id, 8) + ' ' + name);
++}
++
++inline bool remember_toggle(lutron::ToggleTable& toggles, uint32_t id, uint8_t bit) {
++    if (!toggles.set(id, bit)) return false;
++    return append_line(toggles_path(), to_string_hex(id, 8) + ' ' + ((bit & 1) ? '1' : '0'));
++}
++
++inline void load_subnet(lutron::Subnet& subnet) {
++    subnet = {};
++    for_each_line(subnet_path(), [&](const char* line, size_t n) {
++        lutron::Subnet parsed{};
++        if (lutron::parse_subnet_line(line, n, parsed)) subnet = parsed;
++    });
++}
++
++/* Appends only when the three bytes change. False if the card could not be written. */
++inline bool remember_subnet(lutron::Subnet& saved, const lutron::Subnet& seen) {
++    if (!seen.known) return true;
++    if (saved.known && saved.b0 == seen.b0 && saved.b1 == seen.b1 && saved.b2 == seen.b2) return true;
++    if (!append_line(subnet_path(), to_string_hex(lutron::subnet_word(seen), 6))) return false;
++    saved = seen;
++    return true;
++}
++
++}  // namespace lutron_store
++
++#endif /*__LUTRON_STORE_H__*/
+diff --git a/firmware/baseband/proc_lutron_tx.cpp b/firmware/baseband/proc_lutron_tx.cpp
+new file mode 100644
+index 0000000..c96ddfd
+--- /dev/null
++++ b/firmware/baseband/proc_lutron_tx.cpp
+@@ -0,0 +1,83 @@
++/*
++ * Copyright (C) 2026 Dave Hammer
++ *
++ * This file is part of PortaPack.
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; either version 3, or (at your option)
++ * any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program; see the file COPYING.  If not, write to
++ * the Free Software Foundation, Inc., 51 Franklin Street,
++ * Boston, MA 02110-1301, USA.
++ */
++
++#include "proc_lutron_tx.hpp"
++
++#include "event_m4.hpp"
++#include "portapack_shared_memory.hpp"
++#include "sine_table_int8.hpp"
++
++#include <cstdint>
++
++void LutronTXProcessor::execute(const buffer_c8_t& buffer) {
++    if (!configured_) {
++        for (size_t i = 0; i < buffer.count; i++) buffer.p[i] = {0, 0};
++        return;
++    }
++
++    for (size_t i = 0; i < buffer.count; i++) {
++        if (!mod_.running()) {
++            buffer.p[i] = {0, 0};
++            if (!done_sent_) {
++                txprogress_message.done = true;
++                shared_memory.application_queue.push(txprogress_message);
++                done_sent_ = true;
++                configured_ = false;
++            }
++            continue;
++        }
++
++        const int8_t tone = mod_.next();
++        if (tone == 0) {
++            phase_ = 0;
++            buffer.p[i] = {0, 0};
++            continue;
++        }
++        phase_ += static_cast<uint32_t>(static_cast<int32_t>(tone) * static_cast<int32_t>(deviation_step));
++        buffer.p[i] = {
++            sine_table_i8[(phase_ + 0x40000000u) >> 24],
++            sine_table_i8[phase_ >> 24],
++        };
++    }
++}
++
++void LutronTXProcessor::on_message(const Message* const msg) {
++    if (msg->id != Message::ID::LutronTxConfigure) return;
++    const auto& message = *reinterpret_cast<const LutronTxConfigureMessage*>(msg);
++    if (message.count == 0 || message.count > lutron::tx_repeat_cap) {
++        mod_.stop();
++        configured_ = false;
++        phase_ = 0;
++        return;
++    }
++    mod_.start(shared_memory.bb_data.data, message.count);
++    phase_ = 0;
++    done_sent_ = false;
++    txprogress_message.progress = 0;
++    txprogress_message.done = false;
++    configured_ = true;
++}
++
++int main() {
++    EventDispatcher event_dispatcher{std::make_unique<LutronTXProcessor>()};
++    event_dispatcher.run();
++    return 0;
++}
+diff --git a/firmware/baseband/proc_lutron_tx.hpp b/firmware/baseband/proc_lutron_tx.hpp
+new file mode 100644
+index 0000000..4c78051
+--- /dev/null
++++ b/firmware/baseband/proc_lutron_tx.hpp
+@@ -0,0 +1,49 @@
++/*
++ * Copyright (C) 2026 Dave Hammer
++ *
++ * This file is part of PortaPack.
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; either version 3, or (at your option)
++ * any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program; see the file COPYING.  If not, write to
++ * the Free Software Foundation, Inc., 51 Franklin Street,
++ * Boston, MA 02110-1301, USA.
++ */
++
++#ifndef __PROC_LUTRON_TX_H__
++#define __PROC_LUTRON_TX_H__
++
++#include "baseband_processor.hpp"
++#include "baseband_thread.hpp"
++#include "lutron_mod.hpp"
++
++class LutronTXProcessor : public BasebandProcessor {
++   public:
++    void execute(const buffer_c8_t& buffer) override;
++    void on_message(const Message* const msg) override;
++
++   private:
++    static constexpr uint32_t deviation_hz = 37000;
++    /* phase step of one tone at 1 MHz: deviation * 2^32 / sample_rate */
++    static constexpr uint32_t deviation_step = 158913790;
++
++    bool configured_{false};
++    bool done_sent_{false};
++    uint32_t phase_{0};
++    lutron::Mod mod_{};
++    TXProgressMessage txprogress_message{};
++
++    /* NB: Threads should be the last members in the class definition. */
++    BasebandThread baseband_thread{lutron::Mod::sample_rate, this, baseband::Direction::Transmit};
++};
++
++#endif /*__PROC_LUTRON_TX_H__*/
+diff --git a/firmware/common/lutron_mod.hpp b/firmware/common/lutron_mod.hpp
+new file mode 100644
+index 0000000..a575ab8
+--- /dev/null
++++ b/firmware/common/lutron_mod.hpp
+@@ -0,0 +1,84 @@
++/*
++ * Lutron Pico transmitter timing. One sample at a time, at 1 MHz (16 samples per symbol).
++ *
++ * A burst is the air format of lutron_pico.py: 80 bits of 1010..., the UART bytes FF FA DE,
++ * then the 24-byte body. The carrier is off for the rest of the 75 ms slot. The next frame
++ * in the list starts the next slot. +1 is the high tone, -1 the low tone, 0 is carrier off.
++ * The processor turns that into 2-FSK at ±37 kHz. Header only, no firmware dependencies.
++ */
++
++#ifndef __LUTRON_MOD_H__
++#define __LUTRON_MOD_H__
++
++#include <cstddef>
++#include <cstdint>
++#include <cstring>
++
++#include "lutron_pico.hpp"
++
++namespace lutron {
++
++class Mod {
++   public:
++    static constexpr uint32_t sample_rate = 1000000;
++    static constexpr uint32_t slot_samples = 75000;  // 75 ms at 1 MHz
++    static constexpr uint32_t preamble_bits = 80;
++    static constexpr uint32_t prefix_bits = 30;  // FF FA DE, UART 8N1
++    static constexpr int sps = 16;
++    static constexpr uint32_t burst_bits = preamble_bits + prefix_bits + frame_bits;
++    static constexpr uint32_t burst_samples = burst_bits * sps;
++
++    /* `frames` is count bodies of frame_bytes, at most tx_repeat_cap. */
++    void start(const uint8_t* frames, uint8_t count) {
++        if (count > tx_repeat_cap) count = tx_repeat_cap;
++        count_ = count;
++        for (uint8_t i = 0; i < count_; i++) frame_to_bits(frames + i * frame_bytes, bits_[i]);
++        frame_ = 0;
++        sample_ = 0;
++        running_ = count_ > 0;
++    }
++
++    void stop() { running_ = false; }
++
++    bool running() const { return running_; }
++    uint8_t frame_index() const { return frame_; }
++
++    /* The next 1 MHz sample: +1 high tone, -1 low tone, 0 carrier off. */
++    int8_t next() {
++        if (!running_) return 0;
++        const uint32_t in_slot = sample_ % slot_samples;
++        int8_t tone = 0;
++        if (in_slot < burst_samples) {
++            const uint32_t bit = in_slot / sps;
++            tone = air_bit(bit) ? static_cast<int8_t>(1) : static_cast<int8_t>(-1);
++        }
++        sample_++;
++        if ((sample_ % slot_samples) == 0) {
++            frame_++;
++            if (frame_ >= count_) running_ = false;
++        }
++        return tone;
++    }
++
++   private:
++    /* MSB of this word is the first air bit of FF FA DE. */
++    static constexpr uint32_t prefix = 0b011111111100101111110011110111;
++
++    bool air_bit(uint32_t bit) const {
++        if (bit < preamble_bits) return (bit & 1u) == 0;
++        bit -= preamble_bits;
++        if (bit < prefix_bits) return ((prefix >> (prefix_bits - 1 - bit)) & 1u) != 0;
++        bit -= prefix_bits;
++        return ((bits_[frame_][bit >> 3] >> (7 - (bit & 7))) & 1) != 0;
++    }
++
++    uint8_t bits_[tx_repeat_cap][payload_bytes]{};
++    uint8_t count_{0};
++    uint8_t frame_{0};
++    uint32_t sample_{0};
++    bool running_{false};
++};
++
++}  // namespace lutron
++
++#endif /*__LUTRON_MOD_H__*/
